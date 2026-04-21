@@ -10,6 +10,7 @@ const (
 	KindFingerprint Kind = "fingerprint"
 	KindTier        Kind = "tier"
 	KindCapability  Kind = "capability"
+	KindThinking    Kind = "thinking"
 )
 
 type Definition struct {
@@ -20,6 +21,8 @@ type Definition struct {
 	MaxOutputTokens      int
 	Temperature          float64
 	ReasoningEffort      string
+	PromptCacheKey       string
+	PromptCacheRetention string
 	ExpectJSON           bool
 	ExpectUsage          bool
 	ExpectedPhrase       string
@@ -50,6 +53,7 @@ type Usage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+	CachedTokens int
 }
 
 type StreamEvent struct {
@@ -59,19 +63,21 @@ type StreamEvent struct {
 }
 
 type Result struct {
-	Definition        Definition
-	StatusCode        int
-	Text              string
-	ErrorBody         string
-	RawRequest        string
-	RawResponse       string
-	Usage             Usage
-	Latency           time.Duration
-	FirstEventLatency time.Duration
-	StreamEvents      []StreamEvent
-	ToolCalls         []ToolCall
-	UsageReturned     bool
-	Err               error
+	Definition           Definition
+	StatusCode           int
+	Text                 string
+	ErrorBody            string
+	RawRequest           string
+	RawResponse          string
+	Usage                Usage
+	Latency              time.Duration
+	FirstEventLatency    time.Duration
+	StreamEvents         []StreamEvent
+	ToolCalls            []ToolCall
+	UsageReturned        bool
+	PromptCacheKey       string
+	PromptCacheRetention string
+	Err                  error
 }
 
 type ToolCall struct {

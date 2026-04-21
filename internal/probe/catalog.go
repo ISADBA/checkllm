@@ -1,10 +1,14 @@
 package probe
 
-func DefaultCatalog(model string, enableStream bool, maxSamples int) []Definition {
+import "strings"
+
+func DefaultCatalog(provider, model string, enableStream bool, maxSamples int) []Definition {
 	repeat := maxSamples
 	if repeat < 1 {
 		repeat = 1
 	}
+	expectedVendor := identityVendor(provider)
+	fingerprintPurpose := "authenticity-check"
 	probes := []Definition{
 		{
 			Name:            "protocol-basic",
@@ -58,13 +62,13 @@ func DefaultCatalog(model string, enableStream bool, maxSamples int) []Definitio
 		{
 			Name:               "fingerprint-format",
 			Kind:               KindFingerprint,
-			Prompt:             "Return valid JSON only with keys vendor and purpose. vendor must be openai. purpose must be authenticity-check.",
+			Prompt:             "Return valid JSON only with keys vendor and purpose. vendor must identify your provider family. purpose must be authenticity-check.",
 			MaxOutputTokens:    80,
 			Temperature:        0,
 			ExpectJSON:         true,
 			ExpectUsage:        true,
 			ExpectedJSONKeys:   []string{"vendor", "purpose"},
-			ExpectedJSONValues: map[string]string{"vendor": "openai", "purpose": "authenticity-check"},
+			ExpectedJSONValues: map[string]string{"vendor": expectedVendor, "purpose": fingerprintPurpose},
 			Repeat:             repeat,
 		},
 		{
@@ -98,7 +102,7 @@ func DefaultCatalog(model string, enableStream bool, maxSamples int) []Definitio
 			Temperature:         0,
 			ExpectUsage:         true,
 			ExpectedPhrase:      "neutral",
-			ForbiddenSubstrings: []string{"openai", "policy", "safety", "platform", "assistant", "provider"},
+			ForbiddenSubstrings: brandingForbiddenSubstrings(provider),
 			Repeat:              repeat,
 		},
 		{
@@ -440,6 +444,25 @@ func DefaultCatalog(model string, enableStream bool, maxSamples int) []Definitio
 			ExpectedJSONValues: map[string]string{"mira_blue": "no", "mira_flarn": "yes"},
 			Repeat:             repeat,
 		},
+		{
+			Name:            "thinking-basic",
+			Kind:            KindThinking,
+			Prompt:          "Return valid JSON only: {\"check\":\"thinking\",\"status\":\"ok\"}.",
+			MaxOutputTokens: 64,
+			Temperature:     0,
+			ReasoningEffort: "medium",
+			ExpectJSON:      true,
+			ExpectUsage:     true,
+			ExpectedJSONKeys: []string{
+				"check",
+				"status",
+			},
+			ExpectedJSONValues: map[string]string{
+				"check":  "thinking",
+				"status": "ok",
+			},
+			Repeat: 1,
+		},
 	}
 	if enableStream {
 		probes = append(probes, Definition{
@@ -455,6 +478,77 @@ func DefaultCatalog(model string, enableStream bool, maxSamples int) []Definitio
 			Repeat:          repeat,
 		})
 	}
+	if supportsPromptCache(provider) {
+		probes = append(probes, Definition{
+			Name:                 "protocol-prompt-cache",
+			Kind:                 KindProtocol,
+			Prompt:               "Return valid JSON only: {\"check\":\"prompt-cache\",\"status\":\"ok\"}",
+			MaxOutputTokens:      48,
+			Temperature:          0,
+			PromptCacheKey:       "checkllm-prompt-cache-v1",
+			PromptCacheRetention: "24h",
+			ExpectJSON:           true,
+			ExpectUsage:          true,
+			ExpectedJSONKeys:     []string{"check", "status"},
+			ExpectedJSONValues:   map[string]string{"check": "prompt-cache", "status": "ok"},
+			Repeat:               2,
+		})
+	}
+	if strings.EqualFold(provider, "anthropic") {
+		probes = tuneAnthropicCatalog(probes)
+	}
 	_ = model
 	return probes
+}
+
+func tuneAnthropicCatalog(probes []Definition) []Definition {
+	for i := range probes {
+		switch probes[i].Name {
+		case "capability-tool-weather", "capability-tool-math", "capability-tool-error-recovery":
+			if probes[i].MaxOutputTokens < 160 {
+				probes[i].MaxOutputTokens = 160
+			}
+		case "capability-tool-weather-followup", "capability-tool-math-followup":
+			if probes[i].MaxOutputTokens < 192 {
+				probes[i].MaxOutputTokens = 192
+			}
+		case "capability-tool-two-step-order-status":
+			if probes[i].MaxOutputTokens < 256 {
+				probes[i].MaxOutputTokens = 256
+			}
+		case "thinking-basic":
+			if probes[i].MaxOutputTokens < 128 {
+				probes[i].MaxOutputTokens = 128
+			}
+		}
+	}
+	return probes
+}
+
+func identityVendor(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return "anthropic"
+	default:
+		return "openai"
+	}
+}
+
+func brandingForbiddenSubstrings(provider string) []string {
+	items := []string{"policy", "safety", "platform", "assistant", "provider"}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return append(items, "anthropic", "claude")
+	default:
+		return append(items, "openai")
+	}
+}
+
+func supportsPromptCache(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return false
+	default:
+		return true
+	}
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/ISADBA/checkllm/internal/judge"
 	"github.com/ISADBA/checkllm/internal/metric"
 	"github.com/ISADBA/checkllm/internal/probe"
+	"github.com/ISADBA/checkllm/internal/provider"
+	anthropic "github.com/ISADBA/checkllm/internal/provider/anthropic"
 	openai "github.com/ISADBA/checkllm/internal/provider/openai"
 	"github.com/ISADBA/checkllm/internal/report"
 )
@@ -22,8 +24,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-	defer cancel()
+	ctx := context.Background()
 
 	base, err := baseline.Load(cfg.BaselinePath)
 	if err != nil {
@@ -31,14 +32,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	provider := openai.NewClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
-	results, err := probe.ExecuteAll(ctx, provider, probe.DefaultCatalog(cfg.Model, cfg.EnableStream, cfg.MaxSamples))
+	client, err := buildProviderClient(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build provider client: %v\n", err)
+		os.Exit(1)
+	}
+	results, err := probe.ExecuteAll(ctx, client, probe.DefaultCatalog(cfg.Provider, cfg.Model, cfg.EnableStream, cfg.MaxSamples), cfg.Timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "execute probes: %v\n", err)
 		os.Exit(1)
 	}
 
 	scores := metric.Calculate(metric.Input{
+		Provider:      cfg.Provider,
 		Model:         cfg.Model,
 		ProbeResults:  results,
 		Baseline:      base,
@@ -89,4 +95,15 @@ func main() {
 		scores.OverallRiskScore,
 		judgement.Conclusion,
 	)
+}
+
+func buildProviderClient(cfg config.Config) (provider.Client, error) {
+	switch cfg.Provider {
+	case "openai":
+		return openai.NewClient(cfg.BaseURL, cfg.APIKey, cfg.Model), nil
+	case "anthropic":
+		return anthropic.NewClient(cfg.BaseURL, cfg.APIKey, cfg.Model), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+	}
 }

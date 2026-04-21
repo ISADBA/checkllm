@@ -42,10 +42,28 @@ func WriteArchiveMarkdown(path string, run RunReport) error {
 	fmt.Fprintf(&b, "overall_risk_score: %d\n", run.Scores.OverallRiskScore)
 	b.WriteString("```\n\n")
 
+	b.WriteString("## Feature Detection\n\n```yaml\n")
+	fmt.Fprintf(&b, "thinking: %s\n", quoteYAML(run.Thinking.Status))
+	fmt.Fprintf(&b, "prompt_cache: %s\n", quoteYAML(run.PromptCache.Status))
+	fmt.Fprintf(&b, "prompt_cache_key: %s\n", quoteYAML(run.PromptCache.ObservedKey))
+	fmt.Fprintf(&b, "prompt_cache_retention: %s\n", quoteYAML(run.PromptCache.Retention))
+	fmt.Fprintf(&b, "prompt_cache_cached_tokens: %d\n", run.PromptCache.CachedTokens)
+	b.WriteString("```\n\n")
+
 	b.WriteString("## Token Usage\n\n```yaml\n")
 	fmt.Fprintf(&b, "input_tokens: %d\n", run.TokenUsage.InputTokens)
 	fmt.Fprintf(&b, "output_tokens: %d\n", run.TokenUsage.OutputTokens)
 	fmt.Fprintf(&b, "total_tokens: %d\n", run.TokenUsage.TotalTokens)
+	b.WriteString("```\n\n")
+
+	b.WriteString("## Network\n\n```yaml\n")
+	fmt.Fprintf(&b, "avg_latency_ms: %d\n", run.Network.AvgLatencyMs)
+	fmt.Fprintf(&b, "p95_latency_ms: %d\n", run.Network.P95LatencyMs)
+	fmt.Fprintf(&b, "avg_first_byte_ms: %d\n", run.Network.AvgFirstByteMs)
+	fmt.Fprintf(&b, "avg_output_tokens_per_s: %.2f\n", run.Network.AvgOutputTokensPerS)
+	fmt.Fprintf(&b, "avg_stream_events: %.2f\n", run.Network.AvgStreamEvents)
+	fmt.Fprintf(&b, "timeout_count: %d\n", run.Network.TimeoutCount)
+	fmt.Fprintf(&b, "successful_probe_count: %d\n", run.Network.SuccessfulProbeCount)
 	b.WriteString("```\n\n")
 
 	b.WriteString("## Interpretation\n\n")
@@ -87,7 +105,10 @@ func WriteArchiveMarkdown(path string, run RunReport) error {
 		fmt.Fprintf(&b, "usage_input_tokens: %d\n", result.Usage.InputTokens)
 		fmt.Fprintf(&b, "usage_output_tokens: %d\n", result.Usage.OutputTokens)
 		fmt.Fprintf(&b, "usage_total_tokens: %d\n", result.Usage.TotalTokens)
+		fmt.Fprintf(&b, "usage_cached_tokens: %d\n", result.Usage.CachedTokens)
 		fmt.Fprintf(&b, "usage_returned: %t\n", result.UsageReturned)
+		fmt.Fprintf(&b, "prompt_cache_key: %s\n", quoteYAML(result.PromptCacheKey))
+		fmt.Fprintf(&b, "prompt_cache_retention: %s\n", quoteYAML(result.PromptCacheRetention))
 		fmt.Fprintf(&b, "tool_call_count: %d\n", len(result.ToolCalls))
 		fmt.Fprintf(&b, "stream_event_count: %d\n", len(result.StreamEvents))
 		if result.Err != nil {
@@ -204,12 +225,18 @@ func WriteUserMarkdown(path string, run RunReport) error {
 	for _, line := range categoryBullets(run, run.Categories.Functional) {
 		fmt.Fprintf(&b, "- %s\n", line)
 	}
+	fmt.Fprintf(&b, "- Prompt 缓存支持：%s\n", promptCacheLine(run))
 
 	b.WriteString("\n## 智能指标\n\n")
 	for _, line := range categoryBullets(run, run.Categories.Intelligence) {
 		fmt.Fprintf(&b, "- %s\n", line)
 	}
 	fmt.Fprintf(&b, "- 思考支持：%s\n", thinkingSupportLine(run))
+
+	b.WriteString("\n## 网络指标\n\n")
+	for _, line := range networkBullets(run) {
+		fmt.Fprintf(&b, "- %s\n", line)
+	}
 
 	b.WriteString("\n## 指标总览\n\n")
 	for _, line := range metricOverviewBullets(run) {
@@ -255,6 +282,7 @@ func WriteUserMarkdown(path string, run RunReport) error {
 		fmt.Fprintf(&b, "- %s：`%d/100`，%s\n", item.Name, item.Score, judge.FormatStatus(item.Status))
 	}
 	fmt.Fprintf(&b, "- 思考支持：%s\n", thinkingSupportLine(run))
+	fmt.Fprintf(&b, "- Prompt 缓存支持：%s\n", promptCacheLine(run))
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
@@ -289,6 +317,7 @@ func summaryBullets(run RunReport) []string {
 		fmt.Sprintf("功能侧看协议一致性 `%d`、流式一致性 `%d`、Usage 一致性 `%d`、路径完整性 `%d`。", run.Scores.ProtocolConformityScore, run.Scores.StreamConformityScore, run.Scores.UsageConsistencyScore, run.Scores.RouteIntegrityScore),
 		fmt.Sprintf("智能侧看行为指纹 `%d`、工具/函数能力 `%d`、档位保真 `%d`。", run.Scores.BehaviorFingerprintScore, run.Scores.CapabilityToolScore, run.Scores.TierFidelityScore),
 		fmt.Sprintf("思考支持判断：%s", thinkingSupportLine(run)),
+		fmt.Sprintf("Prompt 缓存支持判断：%s", promptCacheLine(run)),
 		fmt.Sprintf("本次鉴定累计消耗 token：输入 `%d`，输出 `%d`，合计 `%d`。", run.TokenUsage.InputTokens, run.TokenUsage.OutputTokens, run.TokenUsage.TotalTokens),
 	}
 	if len(run.Scores.HardAnomalies) > 0 {
@@ -322,7 +351,7 @@ func evidenceBullets(run RunReport) []string {
 		lines = append(lines, fmt.Sprintf("工具参数匹配度为 `%s`。", formatObservation("capability_tool_argument_match", v)))
 	}
 	if v, ok := run.Scores.Observations["capability_tool_followup_match"]; ok {
-		lines = append(lines, fmt.Sprintf("工具结果后续回答匹配度为 `%s`。这项指标当前主要在看模型拿到 tool result 后，能否继续产出正确最终答案；若值异常，需要先结合 run archive 中的原始响应体确认是 endpoint 链路问题，还是 follow-up 交互兼容性问题。", formatObservation("capability_tool_followup_match", v)))
+		lines = append(lines, fmt.Sprintf("工具结果后续回答匹配度为 `%s`。这项指标当前主要在看模型拿到 tool result 后，能否继续产出正确最终答案；若值异常，请优先查看 run archive 中是否记录了 follow-up request/response/error，以区分 endpoint 链路问题与 follow-up 交互兼容性问题。", formatObservation("capability_tool_followup_match", v)))
 	}
 	if v, ok := run.Scores.Observations["tier-longcontext-multihop_pass_ratio"]; ok {
 		lines = append(lines, fmt.Sprintf("长上下文多跳定位通过率为 `%s`。", formatObservation("tier-longcontext-multihop_pass_ratio", v)))
@@ -331,6 +360,7 @@ func evidenceBullets(run RunReport) []string {
 		lines = append(lines, fmt.Sprintf("reasoning 启用增益为 `%s`，正值说明 reasoning-on 用例整体优于 reasoning-off。", formatObservation("reasoning_activation_gain", v)))
 	}
 	lines = append(lines, run.Thinking.Summary)
+	lines = append(lines, run.PromptCache.Summary)
 	return uniq(lines)
 }
 
@@ -346,7 +376,21 @@ func metricOverviewBullets(run RunReport) []string {
 		fmt.Sprintf("档位保真：`%d/100`，%s", run.Scores.TierFidelityScore, metricMeaning(run.Scores.TierFidelityScore)),
 		fmt.Sprintf("路径完整性：`%d/100`，%s", run.Scores.RouteIntegrityScore, metricMeaning(run.Scores.RouteIntegrityScore)),
 		fmt.Sprintf("思考支持：%s", thinkingSupportLine(run)),
+		fmt.Sprintf("Prompt 缓存支持：%s", promptCacheLine(run)),
 	}
+}
+
+func networkBullets(run RunReport) []string {
+	lines := []string{
+		fmt.Sprintf("平均总延时：`%d ms`。", run.Network.AvgLatencyMs),
+		fmt.Sprintf("P95 总延时：`%d ms`。", run.Network.P95LatencyMs),
+		fmt.Sprintf("平均首包时间：`%d ms`。", run.Network.AvgFirstByteMs),
+		fmt.Sprintf("平均输出吞吐：`%.2f tokens/s`。", run.Network.AvgOutputTokensPerS),
+		fmt.Sprintf("平均流式事件数：`%.2f`。", run.Network.AvgStreamEvents),
+		fmt.Sprintf("超时次数：`%d`。", run.Network.TimeoutCount),
+		fmt.Sprintf("成功探测数：`%d`。", run.Network.SuccessfulProbeCount),
+	}
+	return uniq(lines)
 }
 
 func actionBullets(run RunReport) []string {
@@ -454,9 +498,28 @@ func categoryBullets(run RunReport, category MetricCategory) []string {
 func thinkingSupportLine(run RunReport) string {
 	switch run.Thinking.Status {
 	case "supported_active":
+		if strings.EqualFold(run.Config.Provider, "anthropic") {
+			return "已检测到，本次探测出现了活跃的 thinking 信号。"
+		}
 		return "已检测到，本次探测出现了活跃的 reasoning 信号。"
 	case "supported_exposed":
+		if strings.EqualFold(run.Config.Provider, "anthropic") {
+			return "检测到 thinking 字段，但当前用例未稳定观察到实际 thinking 内容，暂不能判断是否可稳定使用。"
+		}
 		return "检测到 reasoning 字段，但当前用例未主动启用，暂不能判断是否可稳定使用。"
+	default:
+		return "本次未检测到明确信号。"
+	}
+}
+
+func promptCacheLine(run RunReport) string {
+	switch run.PromptCache.Status {
+	case "supported_hit":
+		return fmt.Sprintf("已检测到缓存命中，最高 cached tokens 为 `%d`。", run.PromptCache.CachedTokens)
+	case "supported_exposed":
+		return "已检测到 prompt cache 相关字段，但本次未观察到实际缓存命中。"
+	case "not_applicable":
+		return "当前 provider 尚未接入该专项探测，本次不下结论。"
 	default:
 		return "本次未检测到明确信号。"
 	}

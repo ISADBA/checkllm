@@ -1,74 +1,27 @@
 package openai
 
-import "time"
-
-type ProbeRequest struct {
-	Name            string
-	Prompt          string
-	Stream          bool
-	MaxOutputTokens int
-	Temperature     float64
-	ReasoningEffort string
-	Tools           []ToolSpec
-	ToolResult      string
-	ToolResults     map[string]string
-}
-
-type Result struct {
-	StatusCode        int
-	Text              string
-	ErrorBody         string
-	RawRequest        string
-	RawResponse       string
-	Usage             Usage
-	Latency           time.Duration
-	FirstEventLatency time.Duration
-	StreamEvents      []StreamEvent
-	ToolCalls         []ToolCall
-	UsageReturned     bool
-}
-
-type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-}
-
-type StreamEvent struct {
-	Type      string
-	Timestamp time.Time
-	Bytes     int
-}
-
-type ToolSpec struct {
-	Name        string
-	Description string
-	Parameters  map[string]any
-}
-
-type ToolCall struct {
-	Name      string
-	Arguments map[string]any
-}
-
 type responsesRequest struct {
-	Model              string                 `json:"model"`
-	Input              any                    `json:"input"`
-	PreviousResponseID string                 `json:"previous_response_id,omitempty"`
-	Stream             bool                   `json:"stream,omitempty"`
-	MaxOutputTokens    int                    `json:"max_output_tokens,omitempty"`
-	Temperature        float64                `json:"temperature,omitempty"`
-	Reasoning          map[string]any         `json:"reasoning,omitempty"`
-	Text               map[string]interface{} `json:"text,omitempty"`
-	ToolChoice         any                    `json:"tool_choice,omitempty"`
-	Tools              []toolDefinition       `json:"tools,omitempty"`
+	Model                string                 `json:"model"`
+	Input                any                    `json:"input"`
+	PreviousResponseID   string                 `json:"previous_response_id,omitempty"`
+	Stream               bool                   `json:"stream,omitempty"`
+	MaxOutputTokens      int                    `json:"max_output_tokens,omitempty"`
+	Temperature          float64                `json:"temperature,omitempty"`
+	Reasoning            map[string]any         `json:"reasoning,omitempty"`
+	PromptCacheKey       string                 `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string                 `json:"prompt_cache_retention,omitempty"`
+	Text                 map[string]interface{} `json:"text,omitempty"`
+	ToolChoice           any                    `json:"tool_choice,omitempty"`
+	Tools                []toolDefinition       `json:"tools,omitempty"`
 }
 
 type responsesResponse struct {
-	ID     string        `json:"id"`
-	Output []outputItem  `json:"output"`
-	Usage  usagePayload  `json:"usage"`
-	Error  *errorPayload `json:"error"`
+	ID                   string        `json:"id"`
+	Output               []outputItem  `json:"output"`
+	Usage                usagePayload  `json:"usage"`
+	Error                *errorPayload `json:"error"`
+	PromptCacheKey       string        `json:"prompt_cache_key"`
+	PromptCacheRetention string        `json:"prompt_cache_retention"`
 }
 
 type outputItem struct {
@@ -103,9 +56,19 @@ type inputContentItem struct {
 }
 
 type usagePayload struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                `json:"input_tokens"`
+	OutputTokens        int                `json:"output_tokens"`
+	TotalTokens         int                `json:"total_tokens"`
+	InputTokensDetails  usageInputDetails  `json:"input_tokens_details"`
+	OutputTokensDetails usageOutputDetails `json:"output_tokens_details"`
+}
+
+type usageInputDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type usageOutputDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 type errorPayload struct {

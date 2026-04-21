@@ -4,9 +4,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ISADBA/checkllm/internal/baseline"
 )
 
 type Config struct {
@@ -33,13 +36,13 @@ func Parse(args []string) (Config, error) {
 
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var cfg Config
-	fs.StringVar(&cfg.BaseURL, "base-url", "", "OpenAI-compatible API base URL")
+	fs.StringVar(&cfg.BaseURL, "base-url", "", "provider API base URL")
 	fs.StringVar(&cfg.APIKey, "api-key", "", "API key")
 	fs.StringVar(&cfg.Model, "model", "", "target model")
-	fs.StringVar(&cfg.Provider, "provider", "openai", "provider")
+	fs.StringVar(&cfg.Provider, "provider", "", "provider")
 	fs.StringVar(&cfg.BaselinePath, "baseline", "", "baseline markdown file")
 	fs.StringVar(&cfg.OutputPath, "output", "", "output markdown report file")
-	fs.DurationVar(&cfg.Timeout, "timeout", 90*time.Second, "run timeout")
+	fs.DurationVar(&cfg.Timeout, "timeout", 90*time.Second, "per-probe timeout")
 	fs.IntVar(&cfg.MaxSamples, "max-samples", 2, "repeat count for repeat probes")
 	fs.BoolVar(&cfg.EnableStream, "enable-stream", true, "enable stream probes")
 	fs.BoolVar(&cfg.ExpectUsage, "expect-usage", true, "require usage fields to be returned")
@@ -49,17 +52,43 @@ func Parse(args []string) (Config, error) {
 
 	cfg.Command = "run"
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	if cfg.Provider == "" {
-		cfg.Provider = "openai"
-	}
-	if cfg.Provider != "openai" {
-		return Config{}, fmt.Errorf("provider %q is not supported yet", cfg.Provider)
-	}
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {
 		return Config{}, errors.New("missing required flags: --base-url, --api-key, --model")
 	}
+
+	if cfg.BaselinePath != "" {
+		base, err := baseline.Load(cfg.BaselinePath)
+		if err != nil {
+			return Config{}, fmt.Errorf("load baseline: %w", err)
+		}
+		if !strings.EqualFold(base.Model, cfg.Model) {
+			return Config{}, fmt.Errorf("baseline model %q does not match --model %q", base.Model, cfg.Model)
+		}
+		if cfg.Provider == "" {
+			cfg.Provider = base.Provider
+		} else if !strings.EqualFold(cfg.Provider, base.Provider) {
+			return Config{}, fmt.Errorf("provider %q does not match baseline provider %q", cfg.Provider, base.Provider)
+		}
+	}
+
 	if cfg.BaselinePath == "" {
-		cfg.BaselinePath = filepath.Join("docs", "baselines", fmt.Sprintf("%s-%s.md", cfg.Provider, cfg.Model))
+		if cfg.Provider != "" {
+			cfg.BaselinePath = filepath.Join("docs", "baselines", fmt.Sprintf("%s-%s.md", cfg.Provider, cfg.Model))
+		} else {
+			path, provider, err := resolveBaselineForModel(filepath.Join("docs", "baselines"), cfg.Model)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.BaselinePath = path
+			cfg.Provider = provider
+		}
+	}
+
+	if cfg.Provider == "" {
+		return Config{}, fmt.Errorf("provider could not be inferred for model %q", cfg.Model)
+	}
+	if cfg.Provider != "openai" && cfg.Provider != "anthropic" {
+		return Config{}, fmt.Errorf("provider %q is not supported yet", cfg.Provider)
 	}
 	if cfg.OutputPath == "" {
 		cfg.OutputPath = filepath.Join("docs", "runs", fmt.Sprintf("%s-%s.md", time.Now().Format("20060102-150405"), sanitizeFileName(cfg.Model)))
@@ -78,4 +107,42 @@ func (c Config) UserReportPath() string {
 func sanitizeFileName(v string) string {
 	replacer := strings.NewReplacer("/", "-", " ", "-", ":", "-", "\\", "-")
 	return replacer.Replace(v)
+}
+
+func resolveBaselineForModel(dir, model string) (string, string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", fmt.Errorf("baseline directory %q does not exist", dir)
+		}
+		return "", "", err
+	}
+
+	var matchedPath string
+	var matchedProvider string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		base, err := baseline.Load(path)
+		if err != nil {
+			return "", "", fmt.Errorf("load baseline %q: %w", path, err)
+		}
+		if !strings.EqualFold(base.Model, model) {
+			continue
+		}
+		if matchedPath != "" {
+			return "", "", fmt.Errorf("multiple baselines found for model %q: %q and %q", model, matchedPath, path)
+		}
+		matchedPath = path
+		matchedProvider = base.Provider
+	}
+	if matchedPath == "" {
+		return "", "", fmt.Errorf("no baseline found for model %q under %q; specify --provider or --baseline", model, dir)
+	}
+	if matchedProvider == "" {
+		return "", "", fmt.Errorf("baseline %q does not declare provider", matchedPath)
+	}
+	return matchedPath, matchedProvider, nil
 }

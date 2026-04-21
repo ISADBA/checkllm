@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ISADBA/checkllm/internal/provider"
 )
 
 type Client struct {
@@ -30,30 +32,32 @@ func NewClient(baseURL, apiKey, model string) *Client {
 	}
 }
 
-func (c *Client) Execute(ctx context.Context, req ProbeRequest) (Result, error) {
+func (c *Client) Execute(ctx context.Context, req provider.ProbeRequest) (provider.Result, error) {
 	if req.Stream {
 		return c.executeStream(ctx, req)
 	}
 	return c.executeOnce(ctx, req)
 }
 
-func (c *Client) executeOnce(ctx context.Context, req ProbeRequest) (Result, error) {
+func (c *Client) executeOnce(ctx context.Context, req provider.ProbeRequest) (provider.Result, error) {
 	body, err := json.Marshal(responsesRequest{
-		Model:           c.model,
-		Input:           buildUserInput(req.Prompt),
-		MaxOutputTokens: req.MaxOutputTokens,
-		Temperature:     req.Temperature,
-		Reasoning:       buildReasoningConfig(req.ReasoningEffort),
-		Text:            defaultTextConfig(),
-		ToolChoice:      "auto",
-		Tools:           toToolDefinitions(req.Tools),
+		Model:                c.model,
+		Input:                buildUserInput(req.Prompt),
+		MaxOutputTokens:      req.MaxOutputTokens,
+		Temperature:          req.Temperature,
+		Reasoning:            buildReasoningConfig(req.ReasoningEffort),
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		Text:                 defaultTextConfig(),
+		ToolChoice:           "auto",
+		Tools:                toToolDefinitions(req.Tools),
 	})
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/responses", bytes.NewReader(body))
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -61,13 +65,13 @@ func (c *Client) executeOnce(ctx context.Context, req ProbeRequest) (Result, err
 	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	defer resp.Body.Close()
 
 	payload, readErr := io.ReadAll(resp.Body)
 	latency := time.Since(start)
-	result := Result{StatusCode: resp.StatusCode, Latency: latency, RawRequest: string(body), RawResponse: string(payload)}
+	result := provider.Result{StatusCode: resp.StatusCode, Latency: latency, RawRequest: string(body), RawResponse: string(payload)}
 	if readErr != nil {
 		return result, readErr
 	}
@@ -86,37 +90,43 @@ func (c *Client) executeOnce(ctx context.Context, req ProbeRequest) (Result, err
 	}
 	result.Text = extractOutputText(decoded.Output)
 	result.ToolCalls = extractToolCalls(decoded.Output)
-	result.Usage = Usage{
+	result.Usage = provider.Usage{
 		InputTokens:  decoded.Usage.InputTokens,
 		OutputTokens: decoded.Usage.OutputTokens,
 		TotalTokens:  decoded.Usage.TotalTokens,
+		CachedTokens: decoded.Usage.InputTokensDetails.CachedTokens,
 	}
 	result.UsageReturned = decoded.Usage.TotalTokens > 0 || decoded.Usage.InputTokens > 0 || decoded.Usage.OutputTokens > 0
+	result.PromptCacheKey = decoded.PromptCacheKey
+	result.PromptCacheRetention = decoded.PromptCacheRetention
 	if (req.ToolResult != "" || len(req.ToolResults) > 0) && len(result.ToolCalls) > 0 {
 		followUp, err := c.executeToolFollowUp(ctx, req, decoded, result)
-		if err == nil {
-			return followUp, nil
+		if err != nil {
+			return followUp, err
 		}
+		return followUp, nil
 	}
 	return result, nil
 }
 
-func (c *Client) executeToolFollowUp(ctx context.Context, req ProbeRequest, current responsesResponse, result Result) (Result, error) {
+func (c *Client) executeToolFollowUp(ctx context.Context, req provider.ProbeRequest, current responsesResponse, result provider.Result) (provider.Result, error) {
 	for step := 0; step < 4; step++ {
 		input, ok := buildToolFollowUpInput(current.Output, req)
 		if !ok {
 			return result, nil
 		}
 		body, err := json.Marshal(map[string]any{
-			"model":                c.model,
-			"previous_response_id": current.ID,
-			"input":                input,
-			"max_output_tokens":    req.MaxOutputTokens,
-			"temperature":          req.Temperature,
-			"reasoning":            buildReasoningConfig(req.ReasoningEffort),
-			"text":                 defaultTextConfig(),
-			"tool_choice":          "auto",
-			"tools":                toToolDefinitions(req.Tools),
+			"model":                  c.model,
+			"previous_response_id":   current.ID,
+			"input":                  input,
+			"max_output_tokens":      req.MaxOutputTokens,
+			"temperature":            req.Temperature,
+			"reasoning":              buildReasoningConfig(req.ReasoningEffort),
+			"prompt_cache_key":       req.PromptCacheKey,
+			"prompt_cache_retention": req.PromptCacheRetention,
+			"text":                   defaultTextConfig(),
+			"tool_choice":            "auto",
+			"tools":                  toToolDefinitions(req.Tools),
 		})
 		if err != nil {
 			return result, err
@@ -158,12 +168,15 @@ func (c *Client) executeToolFollowUp(ctx context.Context, req ProbeRequest, curr
 		if len(toolCalls) > 0 {
 			result.ToolCalls = append(result.ToolCalls, toolCalls...)
 		}
-		result.Usage = Usage{
+		result.Usage = provider.Usage{
 			InputTokens:  decoded.Usage.InputTokens,
 			OutputTokens: decoded.Usage.OutputTokens,
 			TotalTokens:  decoded.Usage.TotalTokens,
+			CachedTokens: decoded.Usage.InputTokensDetails.CachedTokens,
 		}
 		result.UsageReturned = decoded.Usage.TotalTokens > 0 || decoded.Usage.InputTokens > 0 || decoded.Usage.OutputTokens > 0
+		result.PromptCacheKey = decoded.PromptCacheKey
+		result.PromptCacheRetention = decoded.PromptCacheRetention
 		current = decoded
 		if len(toolCalls) == 0 {
 			return result, nil
@@ -172,23 +185,25 @@ func (c *Client) executeToolFollowUp(ctx context.Context, req ProbeRequest, curr
 	return result, nil
 }
 
-func (c *Client) executeStream(ctx context.Context, req ProbeRequest) (Result, error) {
+func (c *Client) executeStream(ctx context.Context, req provider.ProbeRequest) (provider.Result, error) {
 	body, err := json.Marshal(responsesRequest{
-		Model:           c.model,
-		Input:           buildUserInput(req.Prompt),
-		MaxOutputTokens: req.MaxOutputTokens,
-		Temperature:     req.Temperature,
-		Reasoning:       buildReasoningConfig(req.ReasoningEffort),
-		Stream:          true,
-		Text:            defaultTextConfig(),
-		ToolChoice:      "auto",
+		Model:                c.model,
+		Input:                buildUserInput(req.Prompt),
+		MaxOutputTokens:      req.MaxOutputTokens,
+		Temperature:          req.Temperature,
+		Reasoning:            buildReasoningConfig(req.ReasoningEffort),
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		Stream:               true,
+		Text:                 defaultTextConfig(),
+		ToolChoice:           "auto",
 	})
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/responses", bytes.NewReader(body))
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -196,11 +211,11 @@ func (c *Client) executeStream(ctx context.Context, req ProbeRequest) (Result, e
 	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return Result{}, err
+		return provider.Result{}, err
 	}
 	defer resp.Body.Close()
 
-	result := Result{StatusCode: resp.StatusCode}
+	result := provider.Result{StatusCode: resp.StatusCode}
 	if resp.StatusCode >= 400 {
 		payload, _ := io.ReadAll(resp.Body)
 		result.ErrorBody = string(payload)
@@ -227,7 +242,7 @@ func (c *Client) executeStream(ctx context.Context, req ProbeRequest) (Result, e
 		if strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")
 			if payload == "[DONE]" {
-				result.StreamEvents = append(result.StreamEvents, StreamEvent{Type: "done", Timestamp: time.Now()})
+				result.StreamEvents = append(result.StreamEvents, provider.StreamEvent{Type: "done", Timestamp: time.Now()})
 				break
 			}
 			if evt, ok := parseStreamEnvelope([]byte(payload)); ok {
@@ -236,7 +251,7 @@ func (c *Client) executeStream(ctx context.Context, req ProbeRequest) (Result, e
 					result.FirstEventLatency = now.Sub(start)
 					firstEventSeen = true
 				}
-				result.StreamEvents = append(result.StreamEvents, StreamEvent{
+				result.StreamEvents = append(result.StreamEvents, provider.StreamEvent{
 					Type:      evt.Type,
 					Timestamp: now,
 					Bytes:     len(payload),
@@ -245,7 +260,7 @@ func (c *Client) executeStream(ctx context.Context, req ProbeRequest) (Result, e
 					textBuilder.WriteString(evt.Delta)
 				}
 				if evt.Usage != nil {
-					result.Usage = Usage{
+					result.Usage = provider.Usage{
 						InputTokens:  evt.Usage.InputTokens,
 						OutputTokens: evt.Usage.OutputTokens,
 						TotalTokens:  evt.Usage.TotalTokens,
@@ -401,7 +416,7 @@ func buildReasoningConfig(effort string) map[string]any {
 	return map[string]any{"effort": effort}
 }
 
-func buildToolFollowUpInput(output []outputItem, req ProbeRequest) ([]responseInputItem, bool) {
+func buildToolFollowUpInput(output []outputItem, req provider.ProbeRequest) ([]responseInputItem, bool) {
 	var input []responseInputItem
 	for _, call := range extractToolCalls(output) {
 		callID := findToolCallID(output, call.Name)
@@ -421,7 +436,7 @@ func buildToolFollowUpInput(output []outputItem, req ProbeRequest) ([]responseIn
 	return input, len(input) > 0
 }
 
-func lookupToolResult(req ProbeRequest, toolName string) (string, bool) {
+func lookupToolResult(req provider.ProbeRequest, toolName string) (string, bool) {
 	if len(req.ToolResults) > 0 {
 		if output, ok := req.ToolResults[toolName]; ok {
 			return output, true
@@ -461,13 +476,13 @@ func extractOutputText(output []outputItem) string {
 	return strings.TrimSpace(b.String())
 }
 
-func extractToolCalls(output []outputItem) []ToolCall {
-	var calls []ToolCall
+func extractToolCalls(output []outputItem) []provider.ToolCall {
+	var calls []provider.ToolCall
 	for _, item := range output {
 		if item.Type != "function_call" {
 			continue
 		}
-		call := ToolCall{Name: item.Name, Arguments: map[string]any{}}
+		call := provider.ToolCall{Name: item.Name, Arguments: map[string]any{}}
 		if item.Arguments != "" {
 			_ = json.Unmarshal([]byte(item.Arguments), &call.Arguments)
 		}
@@ -488,7 +503,7 @@ func findToolCallID(output []outputItem, name string) string {
 	return ""
 }
 
-func toToolDefinitions(specs []ToolSpec) []toolDefinition {
+func toToolDefinitions(specs []provider.ToolSpec) []toolDefinition {
 	if len(specs) == 0 {
 		return nil
 	}

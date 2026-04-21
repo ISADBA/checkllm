@@ -17,9 +17,9 @@ protocol_conformity_score:
 stream_conformity_score:
   min: 90
 usage_consistency_score:
-  min: 70
+  min: 90
 behavior_fingerprint_score:
-  min: 80
+  min: 75
 capability_tool_score:
   min: 80
 tier_fidelity_score:

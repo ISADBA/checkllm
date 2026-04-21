@@ -11,6 +11,7 @@ import (
 )
 
 type Input struct {
+	Provider      string
 	Model         string
 	ProbeResults  []probe.Result
 	Baseline      baseline.Baseline
@@ -48,7 +49,7 @@ func Calculate(input Input) Scores {
 	scores.ProtocolConformityScore = calculateProtocolScore(input, grouped, &scores)
 	scores.StreamConformityScore = calculateStreamScore(input, grouped, &scores)
 	scores.UsageConsistencyScore = calculateUsageScore(input, grouped, usageRatios, &scores)
-	scores.BehaviorFingerprintScore = calculateFingerprintScore(grouped, &scores)
+	scores.BehaviorFingerprintScore = calculateFingerprintScore(input, grouped, &scores)
 	scores.CapabilityToolScore = calculateCapabilityScore(grouped, &scores)
 	scores.TierFidelityScore = calculateTierScore(grouped, &scores)
 	scores.RouteIntegrityScore = calculateRouteScore(grouped, scores.StreamConformityScore, scores.ProtocolConformityScore, &scores)
@@ -196,7 +197,7 @@ func calculateUsageScore(input Input, grouped map[string][]probe.Result, usageRa
 	return ratioScore(checks)
 }
 
-func calculateFingerprintScore(grouped map[string][]probe.Result, scores *Scores) int {
+func calculateFingerprintScore(input Input, grouped map[string][]probe.Result, scores *Scores) int {
 	var checks []float64
 	var identityReports []identityReport
 	var multiTurnChecks []float64
@@ -267,7 +268,7 @@ func calculateFingerprintScore(grouped map[string][]probe.Result, scores *Scores
 		scores.Observations["wrapper_cleanliness_score"] = wrapperScore
 	}
 	if len(identityReports) > 0 {
-		identityVendorMatch, identityFamilyMatch, identityConsistency := summarizeIdentityReports(identityReports)
+		identityVendorMatch, identityFamilyMatch, identityConsistency := summarizeIdentityReports(input.Provider, input.Model, identityReports)
 		scores.Observations["identity_self_report_vendor_match"] = identityVendorMatch
 		scores.Observations["identity_self_report_family_match"] = identityFamilyMatch
 		scores.Observations["identity_self_report_consistency"] = identityConsistency
@@ -680,7 +681,7 @@ func streamTypeCoverage(events []probe.StreamEvent) (float64, bool) {
 		if strings.Contains(lower, "delta") || strings.Contains(lower, "added") {
 			hasDelta = true
 		}
-		if strings.Contains(lower, "done") || strings.Contains(lower, "completed") {
+		if strings.Contains(lower, "done") || strings.Contains(lower, "completed") || strings.Contains(lower, "stop") {
 			hasCompleted = true
 		}
 	}
@@ -708,7 +709,8 @@ func standardDeviation(values []float64) float64 {
 
 func hasStreamDoneEvent(events []probe.StreamEvent) bool {
 	for _, evt := range events {
-		if strings.EqualFold(evt.Type, "done") || strings.Contains(strings.ToLower(evt.Type), "completed") {
+		lower := strings.ToLower(evt.Type)
+		if strings.EqualFold(evt.Type, "done") || strings.Contains(lower, "completed") || strings.Contains(lower, "message_stop") || strings.Contains(lower, "stop_reason:") {
 			return true
 		}
 	}
@@ -803,13 +805,13 @@ func parseIdentityReport(text string) (identityReport, bool) {
 	return report, true
 }
 
-func summarizeIdentityReports(reports []identityReport) (float64, float64, float64) {
+func summarizeIdentityReports(provider, model string, reports []identityReport) (float64, float64, float64) {
 	var vendorMatches []float64
 	var familyMatches []float64
 	var normalized []string
 	for _, report := range reports {
-		vendorMatches = append(vendorMatches, matchIdentityVendor(report))
-		familyMatches = append(familyMatches, matchIdentityFamily(report))
+		vendorMatches = append(vendorMatches, matchIdentityVendor(provider, report))
+		familyMatches = append(familyMatches, matchIdentityFamily(model, report))
 		normalized = append(normalized, normalizeText(report.Vendor+"|"+report.Family+"|"+report.Model+"|"+report.Role))
 	}
 	return average(vendorMatches), average(familyMatches), repetitionStability(normalized)
@@ -839,11 +841,17 @@ func parseMultiTurnIdentityConsistency(text string, leftKeys, rightKeys []string
 	return matches / float64(len(leftKeys)), true
 }
 
-func matchIdentityVendor(report identityReport) float64 {
+func matchIdentityVendor(provider string, report identityReport) float64 {
 	text := normalizeText(report.Vendor + " " + report.Role)
+	expected := normalizeText(provider)
+	if expected == "" {
+		expected = "openai"
+	}
 	switch {
-	case strings.Contains(text, "openai"):
+	case strings.Contains(text, expected):
 		return 1
+	case expected == "anthropic" && strings.Contains(text, "claude"):
+		return 0.9
 	case strings.Contains(text, "unknown"):
 		return 0.55
 	case text == "":
@@ -853,13 +861,24 @@ func matchIdentityVendor(report identityReport) float64 {
 	}
 }
 
-func matchIdentityFamily(report identityReport) float64 {
+func matchIdentityFamily(model string, report identityReport) float64 {
 	text := normalizeText(report.Family + " " + report.Model)
+	model = normalizeText(model)
 	switch {
-	case strings.Contains(text, "gpt-5"):
+	case model != "" && strings.Contains(text, model):
 		return 1
-	case strings.Contains(text, "gpt"):
+	case strings.Contains(model, "claude-opus") && strings.Contains(text, "claude opus"):
+		return 0.95
+	case strings.Contains(model, "claude") && strings.Contains(text, "claude"):
+		return 0.85
+	case strings.Contains(model, "gpt-5") && strings.Contains(text, "gpt-5"):
+		return 1
+	case strings.Contains(model, "gpt") && strings.Contains(text, "gpt"):
 		return 0.8
+	case strings.Contains(text, "claude opus"):
+		return 0.8
+	case strings.Contains(text, "claude"):
+		return 0.65
 	case strings.Contains(text, "unknown"):
 		return 0.5
 	case text == "":
