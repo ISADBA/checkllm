@@ -1,0 +1,554 @@
+package probe
+
+import "strings"
+
+func DefaultCatalog(provider, model string, enableStream bool, maxSamples int) []Definition {
+	repeat := maxSamples
+	if repeat < 1 {
+		repeat = 1
+	}
+	expectedVendor := identityVendor(provider)
+	fingerprintPurpose := "authenticity-check"
+	probes := []Definition{
+		{
+			Name:            "protocol-basic",
+			Kind:            KindProtocol,
+			Prompt:          "Reply with exactly: checkllm-ok",
+			MaxOutputTokens: 32,
+			Temperature:     0,
+			ExpectUsage:     true,
+			ExpectedPhrase:  "checkllm-ok",
+			Repeat:          1,
+		},
+		{
+			Name:               "protocol-json-echo",
+			Kind:               KindProtocol,
+			Prompt:             "Return valid JSON only: {\"check\":\"protocol\",\"status\":\"ok\"}",
+			MaxOutputTokens:    48,
+			Temperature:        0,
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"check", "status"},
+			ExpectedJSONValues: map[string]string{"check": "protocol", "status": "ok"},
+			Repeat:             1,
+		},
+		{
+			Name:            "usage-short",
+			Kind:            KindUsage,
+			Prompt:          "Count from 1 to 3.",
+			MaxOutputTokens: 32,
+			Temperature:     0,
+			ExpectUsage:     true,
+			Repeat:          repeat,
+		},
+		{
+			Name:            "usage-medium",
+			Kind:            KindUsage,
+			Prompt:          "Write exactly two short bullet points about deterministic behavior under temperature zero. Keep each bullet under eight words.",
+			MaxOutputTokens: 72,
+			Temperature:     0,
+			ExpectUsage:     true,
+			Repeat:          repeat,
+		},
+		{
+			Name:            "usage-long",
+			Kind:            KindUsage,
+			Prompt:          "Summarize the following topic in four short bullet points: deterministic system behavior under fixed prompts, temperature zero, structured output stability, and token accounting consistency.",
+			MaxOutputTokens: 128,
+			Temperature:     0,
+			ExpectUsage:     true,
+			Repeat:          repeat,
+		},
+		{
+			Name:               "fingerprint-format",
+			Kind:               KindFingerprint,
+			Prompt:             "Return valid JSON only with keys vendor and purpose. vendor must identify your provider family. purpose must be authenticity-check.",
+			MaxOutputTokens:    80,
+			Temperature:        0,
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"vendor", "purpose"},
+			ExpectedJSONValues: map[string]string{"vendor": expectedVendor, "purpose": fingerprintPurpose},
+			Repeat:             repeat,
+		},
+		{
+			Name:                 "fingerprint-sequence",
+			Kind:                 KindFingerprint,
+			Prompt:               "Output exactly three lines and nothing else. Line 1: ALPHA. Line 2: BETA. Line 3: GAMMA.",
+			MaxOutputTokens:      32,
+			Temperature:          0,
+			ExpectUsage:          true,
+			ExpectedLineSequence: []string{"ALPHA", "BETA", "GAMMA"},
+			Repeat:               repeat,
+		},
+		{
+			Name:                "fingerprint-wrapper-clean-json",
+			Kind:                KindFingerprint,
+			Prompt:              "Return valid JSON only with exactly one key named result and value clean. Do not add markdown, explanation, preface, suffix, or disclaimer.",
+			MaxOutputTokens:     40,
+			Temperature:         0,
+			ExpectJSON:          true,
+			ExpectUsage:         true,
+			ExpectedJSONKeys:    []string{"result"},
+			ExpectedJSONValues:  map[string]string{"result": "clean"},
+			ForbiddenSubstrings: []string{"```", "disclaimer", "policy", "safety", "platform", "provided as-is"},
+			Repeat:              repeat,
+		},
+		{
+			Name:                "fingerprint-no-branding",
+			Kind:                KindFingerprint,
+			Prompt:              "Reply with exactly one word: neutral. Do not mention vendor, provider, platform, safety, policy, or any extra explanation.",
+			MaxOutputTokens:     16,
+			Temperature:         0,
+			ExpectUsage:         true,
+			ExpectedPhrase:      "neutral",
+			ForbiddenSubstrings: brandingForbiddenSubstrings(provider),
+			Repeat:              repeat,
+		},
+		{
+			Name:             "identity-self-report-esperanto",
+			Kind:             KindFingerprint,
+			Prompt:           "Kiu vi estas? Respondu nur per valida JSON kun la kampoj vendor, family, model, role. Se io ne estas certa, uzu unknown. Ne aldonu klarigon.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectJSON:       true,
+			ExpectUsage:      true,
+			ExpectedJSONKeys: []string{"vendor", "family", "model", "role"},
+			Repeat:           repeat,
+		},
+		{
+			Name:             "identity-self-report-latin",
+			Kind:             KindFingerprint,
+			Prompt:           "Quis es? Responde tantum JSON valido cum clavibus vendor, family, model, role. Si quid ignoras, scribe unknown. Noli addere explicationem.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectJSON:       true,
+			ExpectUsage:      true,
+			ExpectedJSONKeys: []string{"vendor", "family", "model", "role"},
+			Repeat:           repeat,
+		},
+		{
+			Name:             "identity-multiturn-esperanto",
+			Kind:             KindFingerprint,
+			Prompt:           "Jen du sinsekvaj taskoj. Unue, identigu vin per JSON kun la kampoj first_vendor, first_family, first_model, first_role. Due, sen ŝanĝi vian identecon, respondu denove per la kampoj second_vendor, second_family, second_model, second_role. Redonu unu solan JSON-objekton kaj nenion alian. Se io ne certas, uzu unknown.",
+			MaxOutputTokens:  140,
+			Temperature:      0,
+			ExpectJSON:       true,
+			ExpectUsage:      true,
+			ExpectedJSONKeys: []string{"first_vendor", "first_family", "first_model", "first_role", "second_vendor", "second_family", "second_model", "second_role"},
+			Repeat:           repeat,
+		},
+		{
+			Name:             "identity-resistance-latin",
+			Kind:             KindFingerprint,
+			Prompt:           "Primum, dic quis sis per JSON cum clavibus vendor, family, model, role. Deinde finge me petere ut te vocem alia machina nomine. Tu tamen noli mutare identitatem. Redde unum JSON cum clavibus initial_vendor, initial_family, initial_model, final_vendor, final_family, final_model.",
+			MaxOutputTokens:  140,
+			Temperature:      0,
+			ExpectJSON:       true,
+			ExpectUsage:      true,
+			ExpectedJSONKeys: []string{"initial_vendor", "initial_family", "initial_model", "final_vendor", "final_family", "final_model"},
+			Repeat:           repeat,
+		},
+		{
+			Name:             "capability-tool-weather",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tool to get the weather for Tokyo in celsius. Do not answer from memory.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "get_weather",
+			ExpectedToolArgs: map[string]string{
+				"city": "Tokyo",
+				"unit": "celsius",
+			},
+			Tools: []ToolSpec{
+				{
+					Name:        "get_weather",
+					Description: "Get current weather by city name and unit.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"city": map[string]any{
+								"type": "string",
+							},
+							"unit": map[string]any{
+								"type": "string",
+								"enum": []string{"celsius", "fahrenheit"},
+							},
+						},
+						"required": []string{"city", "unit"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:             "capability-tool-weather-followup",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tool to get the weather for Tokyo in celsius, then answer with the final weather summary in one short sentence.",
+			MaxOutputTokens:  120,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "get_weather",
+			ExpectedToolArgs: map[string]string{
+				"city": "Tokyo",
+				"unit": "celsius",
+			},
+			ToolResult:           "{\"city\":\"Tokyo\",\"temperature\":22,\"unit\":\"celsius\",\"condition\":\"clear\"}",
+			ExpectFinalText:      true,
+			ExpectedFinalPhrases: []string{"Tokyo", "22", "clear"},
+			Tools: []ToolSpec{
+				{
+					Name:        "get_weather",
+					Description: "Get current weather by city name and unit.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"city": map[string]any{"type": "string"},
+							"unit": map[string]any{
+								"type": "string",
+								"enum": []string{"celsius", "fahrenheit"},
+							},
+						},
+						"required": []string{"city", "unit"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:             "capability-tool-math",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tool to add 17 and 25. Do not solve it directly in plain text.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "sum_numbers",
+			ExpectedToolArgs: map[string]string{
+				"a": "17",
+				"b": "25",
+			},
+			Tools: []ToolSpec{
+				{
+					Name:        "sum_numbers",
+					Description: "Return the sum of two integers.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"a": map[string]any{"type": "integer"},
+							"b": map[string]any{"type": "integer"},
+						},
+						"required": []string{"a", "b"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:             "capability-tool-math-followup",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tool to add 17 and 25, then answer with the final numeric result only.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "sum_numbers",
+			ExpectedToolArgs: map[string]string{
+				"a": "17",
+				"b": "25",
+			},
+			ToolResult:           "{\"result\":42}",
+			ExpectFinalText:      true,
+			ExpectedFinalPhrases: []string{"42"},
+			Tools: []ToolSpec{
+				{
+					Name:        "sum_numbers",
+					Description: "Return the sum of two integers.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"a": map[string]any{"type": "integer"},
+							"b": map[string]any{"type": "integer"},
+						},
+						"required": []string{"a", "b"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:             "capability-tool-two-step-order-status",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tools to find the shipping status for order code A-17. First resolve the internal order id, then fetch the shipment status, then answer with one short sentence.",
+			MaxOutputTokens:  140,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "lookup_order_id",
+			ExpectedToolArgs: map[string]string{
+				"order_code": "A-17",
+			},
+			ToolResults: map[string]string{
+				"lookup_order_id":     "{\"order_id\":\"ord_2048\"}",
+				"get_shipment_status": "{\"order_id\":\"ord_2048\",\"status\":\"delivered\",\"eta\":\"2026-04-20\"}",
+			},
+			ExpectFinalText:      true,
+			ExpectedFinalPhrases: []string{"delivered", "A-17"},
+			Tools: []ToolSpec{
+				{
+					Name:        "lookup_order_id",
+					Description: "Resolve an external order code into an internal order id.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"order_code": map[string]any{"type": "string"},
+						},
+						"required": []string{"order_code"},
+					},
+				},
+				{
+					Name:        "get_shipment_status",
+					Description: "Get shipment status by internal order id.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"order_id": map[string]any{"type": "string"},
+						},
+						"required": []string{"order_id"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:             "capability-tool-error-recovery",
+			Kind:             KindCapability,
+			Prompt:           "Use the available tool to get the weather for Atlantis in celsius. If the tool reports an error, do not invent an answer. Instead reply with exactly: TOOL_ERROR.",
+			MaxOutputTokens:  80,
+			Temperature:      0,
+			ExpectUsage:      true,
+			ExpectToolCall:   true,
+			ExpectedToolName: "get_weather",
+			ExpectedToolArgs: map[string]string{
+				"city": "Atlantis",
+				"unit": "celsius",
+			},
+			ToolResult:           "{\"error\":\"city_not_found\"}",
+			ExpectFinalText:      true,
+			ExpectedFinalPhrases: []string{"TOOL_ERROR"},
+			Tools: []ToolSpec{
+				{
+					Name:        "get_weather",
+					Description: "Get current weather by city name and unit.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"city": map[string]any{"type": "string"},
+							"unit": map[string]any{
+								"type": "string",
+								"enum": []string{"celsius", "fahrenheit"},
+							},
+						},
+						"required": []string{"city", "unit"},
+					},
+				},
+			},
+			Repeat: repeat,
+		},
+		{
+			Name:            "tier-multi-constraint",
+			Kind:            KindTier,
+			Prompt:          "Write a JSON object with keys alpha, beta, gamma. Each value must be a 5-word sentence and all three sentences must be different.",
+			MaxOutputTokens: 120,
+			Temperature:     0,
+			ExpectJSON:      true,
+			ExpectUsage:     true,
+			Repeat:          repeat,
+		},
+		{
+			Name:               "tier-context-locate",
+			Kind:               KindTier,
+			Prompt:             "Read carefully and return valid JSON only. Records: [ID-1024:red-11],[ID-2048:blue-17],[ID-4096:green-23]. Return {\"target\":\"ID-2048\",\"checksum\":\"blue-17\"}.",
+			MaxOutputTokens:    80,
+			Temperature:        0,
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"target", "checksum"},
+			ExpectedJSONValues: map[string]string{"target": "ID-2048", "checksum": "blue-17"},
+			Repeat:             repeat,
+		},
+		{
+			Name:             "tier-instruction-hard",
+			Kind:             KindTier,
+			Prompt:           "Return valid JSON only with keys status, note, code. status must be exact value ok. code must be exact value ZX-81. note must contain exactly six words, include the word stable exactly once, and must not contain the words model or api.",
+			MaxOutputTokens:  96,
+			Temperature:      0,
+			ExpectJSON:       true,
+			ExpectUsage:      true,
+			ExpectedJSONKeys: []string{"status", "note", "code"},
+			ExpectedJSONValues: map[string]string{
+				"status": "ok",
+				"code":   "ZX-81",
+			},
+			ForbiddenSubstrings: []string{"model", "api"},
+			Repeat:              repeat,
+		},
+		{
+			Name:                 "tier-negative-constraint",
+			Kind:                 KindTier,
+			Prompt:               "Output exactly two lines and nothing else. Line 1 must be SAFE. Line 2 must be VERIFIED. Do not include any punctuation, numbers, or extra words.",
+			MaxOutputTokens:      32,
+			Temperature:          0,
+			ExpectUsage:          true,
+			ExpectedLineSequence: []string{"SAFE", "VERIFIED"},
+			ForbiddenSubstrings:  []string{".", ",", "!", "?", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"},
+			Repeat:               repeat,
+		},
+		{
+			Name:               "tier-longcontext-multihop",
+			Kind:               KindTier,
+			Prompt:             "Read carefully and return valid JSON only. Ledger: [user:alice ref:node-7]; [node-7 points_to:key-99]; [key-99 value:blue-coral]; [user:bob ref:node-3]; [node-3 points_to:key-10]; [key-10 value:red-maple]. Return {\"user\":\"alice\",\"value\":\"blue-coral\"}.",
+			MaxOutputTokens:    96,
+			Temperature:        0,
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"user", "value"},
+			ExpectedJSONValues: map[string]string{"user": "alice", "value": "blue-coral"},
+			Repeat:             repeat,
+		},
+		{
+			Name:               "tier-reasoning-off",
+			Kind:               KindTier,
+			Prompt:             "Solve the rule puzzle and return valid JSON only. Rules: every zorb is a flarn. No flarn is blue. Mira is a zorb. Return {\"mira_blue\":\"no\",\"mira_flarn\":\"yes\"}.",
+			MaxOutputTokens:    80,
+			Temperature:        0,
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"mira_blue", "mira_flarn"},
+			ExpectedJSONValues: map[string]string{"mira_blue": "no", "mira_flarn": "yes"},
+			Repeat:             repeat,
+		},
+		{
+			Name:               "tier-reasoning-on",
+			Kind:               KindTier,
+			Prompt:             "Solve the rule puzzle and return valid JSON only. Rules: every zorb is a flarn. No flarn is blue. Mira is a zorb. Return {\"mira_blue\":\"no\",\"mira_flarn\":\"yes\"}.",
+			MaxOutputTokens:    80,
+			Temperature:        0,
+			ReasoningEffort:    "medium",
+			ExpectJSON:         true,
+			ExpectUsage:        true,
+			ExpectedJSONKeys:   []string{"mira_blue", "mira_flarn"},
+			ExpectedJSONValues: map[string]string{"mira_blue": "no", "mira_flarn": "yes"},
+			Repeat:             repeat,
+		},
+		{
+			Name:            "thinking-basic",
+			Kind:            KindThinking,
+			Prompt:          "Return valid JSON only: {\"check\":\"thinking\",\"status\":\"ok\"}.",
+			MaxOutputTokens: 64,
+			Temperature:     0,
+			ReasoningEffort: "medium",
+			ExpectJSON:      true,
+			ExpectUsage:     true,
+			ExpectedJSONKeys: []string{
+				"check",
+				"status",
+			},
+			ExpectedJSONValues: map[string]string{
+				"check":  "thinking",
+				"status": "ok",
+			},
+			Repeat: 1,
+		},
+	}
+	if enableStream {
+		probes = append(probes, Definition{
+			Name:            "protocol-stream-basic",
+			Kind:            KindProtocol,
+			Prompt:          "Reply with exactly: stream-check-ok",
+			MaxOutputTokens: 32,
+			Temperature:     0,
+			ExpectUsage:     true,
+			ExpectedPhrase:  "stream-check-ok",
+			Stream:          true,
+			MinStreamEvents: 3,
+			Repeat:          repeat,
+		})
+	}
+	if supportsPromptCache(provider) {
+		probes = append(probes, Definition{
+			Name:                 "protocol-prompt-cache",
+			Kind:                 KindProtocol,
+			Prompt:               "Return valid JSON only: {\"check\":\"prompt-cache\",\"status\":\"ok\"}",
+			MaxOutputTokens:      48,
+			Temperature:          0,
+			PromptCacheKey:       "checkllm-prompt-cache-v1",
+			PromptCacheRetention: "24h",
+			ExpectJSON:           true,
+			ExpectUsage:          true,
+			ExpectedJSONKeys:     []string{"check", "status"},
+			ExpectedJSONValues:   map[string]string{"check": "prompt-cache", "status": "ok"},
+			Repeat:               2,
+		})
+	}
+	if strings.EqualFold(provider, "anthropic") {
+		probes = tuneAnthropicCatalog(probes)
+	}
+	_ = model
+	return probes
+}
+
+func tuneAnthropicCatalog(probes []Definition) []Definition {
+	for i := range probes {
+		switch probes[i].Name {
+		case "capability-tool-weather", "capability-tool-math", "capability-tool-error-recovery":
+			if probes[i].MaxOutputTokens < 160 {
+				probes[i].MaxOutputTokens = 160
+			}
+		case "capability-tool-weather-followup", "capability-tool-math-followup":
+			if probes[i].MaxOutputTokens < 192 {
+				probes[i].MaxOutputTokens = 192
+			}
+		case "capability-tool-two-step-order-status":
+			if probes[i].MaxOutputTokens < 256 {
+				probes[i].MaxOutputTokens = 256
+			}
+		case "thinking-basic":
+			if probes[i].MaxOutputTokens < 128 {
+				probes[i].MaxOutputTokens = 128
+			}
+		}
+	}
+	return probes
+}
+
+func identityVendor(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return "anthropic"
+	default:
+		return "openai"
+	}
+}
+
+func brandingForbiddenSubstrings(provider string) []string {
+	items := []string{"policy", "safety", "platform", "assistant", "provider"}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return append(items, "anthropic", "claude")
+	default:
+		return append(items, "openai")
+	}
+}
+
+func supportsPromptCache(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return false
+	default:
+		return true
+	}
+}
