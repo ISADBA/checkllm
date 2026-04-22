@@ -15,6 +15,7 @@ const (
 
 type Definition struct {
 	Name                 string
+	ReuseResultFrom      string
 	Kind                 Kind
 	Prompt               string
 	Stream               bool

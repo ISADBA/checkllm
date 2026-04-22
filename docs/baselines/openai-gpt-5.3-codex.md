@@ -4,7 +4,7 @@
 
 ```yaml
 provider: openai
-model: gpt-5.4
+model: gpt-5.3-codex
 api_style: responses
 updated_at: 2026-04-20
 ```
@@ -32,5 +32,5 @@ overall_risk_score:
 
 ## Notes
 
-- Baseline is intended for direct OpenAI-compatible GPT-5.4 responses API behavior.
+- Baseline is intended for direct OpenAI-compatible GPT-5.3-codex responses API behavior.
 - Usage token ranges are approximate and should be tuned with real official samples.

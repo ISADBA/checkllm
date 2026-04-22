@@ -3,3 +3,4 @@ runs/
 repos/
 LOCAL_README.md
 checkllm
+dist/

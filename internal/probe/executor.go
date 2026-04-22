@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,11 +11,21 @@ import (
 
 func ExecuteAll(ctx context.Context, client provider.Client, defs []Definition, perProbeTimeout time.Duration) ([]Result, error) {
 	results := make([]Result, 0, len(defs))
+	latestByName := make(map[string]Result, len(defs))
 	for _, def := range defs {
-		repeat := def.Repeat
-		if repeat < 1 {
-			repeat = 1
+		if def.ReuseResultFrom != "" {
+			reused, ok := latestByName[def.ReuseResultFrom]
+			if !ok {
+				return results, fmt.Errorf("probe %s reuses unknown source probe %s", def.Name, def.ReuseResultFrom)
+			}
+			for i := 0; i < maxRepeat(def.Repeat); i++ {
+				cloned := reused
+				cloned.Definition = def
+				results = append(results, cloned)
+			}
+			continue
 		}
+		repeat := maxRepeat(def.Repeat)
 		for i := 0; i < repeat; i++ {
 			probeCtx := ctx
 			cancel := func() {}
@@ -71,12 +82,20 @@ func ExecuteAll(ctx context.Context, client provider.Client, defs []Definition, 
 				result.Err = err
 			}
 			results = append(results, result)
+			latestByName[def.Name] = result
 			if isFatalProtocolMismatch(def, err) {
 				return results, nil
 			}
 		}
 	}
 	return results, nil
+}
+
+func maxRepeat(repeat int) int {
+	if repeat < 1 {
+		return 1
+	}
+	return repeat
 }
 
 func isFatalProtocolMismatch(def Definition, err error) bool {
