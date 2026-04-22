@@ -50,7 +50,7 @@ func Calculate(input Input) Scores {
 	scores.StreamConformityScore = calculateStreamScore(input, grouped, &scores)
 	scores.UsageConsistencyScore = calculateUsageScore(input, grouped, usageRatios, &scores)
 	scores.BehaviorFingerprintScore = calculateFingerprintScore(input, grouped, &scores)
-	scores.CapabilityToolScore = calculateCapabilityScore(grouped, &scores)
+	scores.CapabilityToolScore = calculateCapabilityScore(input, grouped, &scores)
 	scores.TierFidelityScore = calculateTierScore(grouped, &scores)
 	scores.RouteIntegrityScore = calculateRouteScore(grouped, scores.StreamConformityScore, scores.ProtocolConformityScore, &scores)
 
@@ -72,6 +72,9 @@ func Calculate(input Input) Scores {
 
 func calculateProtocolScore(input Input, grouped map[string][]probe.Result, scores *Scores) int {
 	var checks []float64
+	var envelopeChecks []float64
+	var terminalChecks []float64
+	var usageShapeChecks []float64
 	for _, results := range grouped {
 		for _, res := range results {
 			if res.Definition.Kind != probe.KindProtocol {
@@ -87,21 +90,37 @@ func calculateProtocolScore(input Input, grouped map[string][]probe.Result, scor
 				scores.HardAnomalies = append(scores.HardAnomalies, res.Definition.Name+" missing usage")
 				score *= 0.4
 			}
-			if res.Definition.ExpectedPhrase != "" && !strings.Contains(strings.ToLower(res.Text), strings.ToLower(res.Definition.ExpectedPhrase)) {
-				score *= 0.6
-			}
-			if containsForbiddenSubstring(res.Text, res.Definition.ForbiddenSubstrings) {
-				score *= 0.4
-			}
-			if res.Definition.ExpectJSON {
-				if !looksLikeJSON(res.Text) {
-					score *= 0.3
-				} else if !validateJSONExpectations(res.Text, res.Definition) {
+			if !res.Definition.Stream {
+				if ok := validateProtocolEnvelope(input.Provider, res); ok {
+					envelopeChecks = append(envelopeChecks, 1)
+				} else {
+					envelopeChecks = append(envelopeChecks, 0)
 					score *= 0.6
 				}
+				if ok := validateProtocolTerminalState(input.Provider, res); ok {
+					terminalChecks = append(terminalChecks, 1)
+				} else {
+					terminalChecks = append(terminalChecks, 0)
+					score *= 0.8
+				}
+			}
+			if ok := validateProtocolUsageShape(res); ok {
+				usageShapeChecks = append(usageShapeChecks, 1)
+			} else {
+				usageShapeChecks = append(usageShapeChecks, 0)
+				score *= 0.8
 			}
 			checks = append(checks, score)
 		}
+	}
+	if len(envelopeChecks) > 0 {
+		scores.Observations["protocol_envelope_pass_ratio"] = average(envelopeChecks)
+	}
+	if len(terminalChecks) > 0 {
+		scores.Observations["protocol_terminal_state_pass_ratio"] = average(terminalChecks)
+	}
+	if len(usageShapeChecks) > 0 {
+		scores.Observations["protocol_usage_shape_pass_ratio"] = average(usageShapeChecks)
 	}
 	return ratioScore(checks)
 }
@@ -345,8 +364,9 @@ func calculateTierScore(grouped map[string][]probe.Result, scores *Scores) int {
 	return ratioScore(checks)
 }
 
-func calculateCapabilityScore(grouped map[string][]probe.Result, scores *Scores) int {
+func calculateCapabilityScore(input Input, grouped map[string][]probe.Result, scores *Scores) int {
 	var checks []float64
+	var weights []float64
 	var toolCallHits []float64
 	var toolArgMatches []float64
 	var finalAnswerMatches []float64
@@ -385,20 +405,24 @@ func calculateCapabilityScore(grouped map[string][]probe.Result, scores *Scores)
 		passRatio := average(success)
 		scores.Observations[name+"_pass_ratio"] = passRatio
 		checks = append(checks, passRatio)
+		weights = append(weights, capabilityCheckWeight(input.Provider, results[0].Definition))
 	}
 	if len(toolCallHits) > 0 {
 		scores.Observations["capability_tool_call_hit_ratio"] = average(toolCallHits)
 		checks = append(checks, average(toolCallHits))
+		weights = append(weights, 1)
 	}
 	if len(toolArgMatches) > 0 {
 		scores.Observations["capability_tool_argument_match"] = average(toolArgMatches)
 		checks = append(checks, average(toolArgMatches))
+		weights = append(weights, 1)
 	}
 	if len(finalAnswerMatches) > 0 {
 		scores.Observations["capability_tool_followup_match"] = average(finalAnswerMatches)
 		checks = append(checks, average(finalAnswerMatches))
+		weights = append(weights, capabilityFollowUpAggregateWeight(input.Provider))
 	}
-	return ratioScore(checks)
+	return weightedRatioScore(checks, weights)
 }
 
 func calculateRouteScore(grouped map[string][]probe.Result, streamScore, protocolScore int, scores *Scores) int {
@@ -492,6 +516,110 @@ func validateLineSequence(text string, expected []string) bool {
 		}
 	}
 	return true
+}
+
+func validateProtocolEnvelope(provider string, res probe.Result) bool {
+	payload, ok := parsePrimaryJSONObject(res.RawResponse)
+	if !ok {
+		return false
+	}
+	if !hasNonEmptyString(payload, "id") || !hasNonEmptyString(payload, "model") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		if !matchesString(payload, "object", "response") {
+			return false
+		}
+		output, ok := payload["output"].([]any)
+		return ok && len(output) > 0
+	case "anthropic":
+		if !matchesString(payload, "type", "message") || !matchesString(payload, "role", "assistant") {
+			return false
+		}
+		content, ok := payload["content"].([]any)
+		return ok && len(content) > 0
+	default:
+		return true
+	}
+}
+
+func validateProtocolTerminalState(provider string, res probe.Result) bool {
+	payload, ok := parsePrimaryJSONObject(res.RawResponse)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		status, ok := payload["status"].(string)
+		if !ok || status == "" {
+			return false
+		}
+		switch status {
+		case "completed", "incomplete", "failed", "cancelled", "queued", "in_progress":
+			return true
+		default:
+			return false
+		}
+	case "anthropic":
+		stopReason, exists := payload["stop_reason"]
+		if !exists || stopReason == nil {
+			return false
+		}
+		value, ok := stopReason.(string)
+		if !ok || value == "" {
+			return false
+		}
+		switch value {
+		case "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal":
+			return true
+		default:
+			return false
+		}
+	default:
+		return true
+	}
+}
+
+func validateProtocolUsageShape(res probe.Result) bool {
+	if !res.Definition.ExpectUsage || !res.UsageReturned {
+		return true
+	}
+	if res.Usage.InputTokens < 0 || res.Usage.OutputTokens < 0 || res.Usage.TotalTokens < 0 || res.Usage.CachedTokens < 0 {
+		return false
+	}
+	if res.Usage.CachedTokens > res.Usage.InputTokens {
+		return false
+	}
+	if res.Usage.TotalTokens < res.Usage.InputTokens || res.Usage.TotalTokens < res.Usage.OutputTokens {
+		return false
+	}
+	if res.Usage.TotalTokens > 0 && res.Usage.TotalTokens < res.Usage.InputTokens+res.Usage.OutputTokens {
+		return false
+	}
+	return true
+}
+
+func parsePrimaryJSONObject(raw string) (map[string]any, bool) {
+	primary := raw
+	if idx := strings.Index(primary, "\n\n--- FOLLOWUP RESPONSE ---\n"); idx >= 0 {
+		primary = primary[:idx]
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(primary)), &payload) != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func hasNonEmptyString(payload map[string]any, key string) bool {
+	value, ok := payload[key].(string)
+	return ok && strings.TrimSpace(value) != ""
+}
+
+func matchesString(payload map[string]any, key, expected string) bool {
+	value, ok := payload[key].(string)
+	return ok && strings.EqualFold(strings.TrimSpace(value), expected)
 }
 
 func scoreTierMultiConstraint(text string) float64 {
@@ -749,6 +877,43 @@ func ratioScore(checks []float64) int {
 		return 0
 	}
 	return clampInt(int(math.Round(average(checks)*100)), 0, 100)
+}
+
+func weightedRatioScore(checks, weights []float64) int {
+	if len(checks) == 0 {
+		return 0
+	}
+	if len(checks) != len(weights) {
+		return ratioScore(checks)
+	}
+	var sum float64
+	var totalWeight float64
+	for i, check := range checks {
+		weight := weights[i]
+		if weight <= 0 {
+			continue
+		}
+		sum += check * weight
+		totalWeight += weight
+	}
+	if totalWeight == 0 {
+		return 0
+	}
+	return clampInt(int(math.Round(sum/totalWeight*100)), 0, 100)
+}
+
+func capabilityCheckWeight(provider string, def probe.Definition) float64 {
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") && def.ExpectFinalText {
+		return 0.2
+	}
+	return 1
+}
+
+func capabilityFollowUpAggregateWeight(provider string) float64 {
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") {
+		return 0.2
+	}
+	return 1
 }
 
 func clampUnit(v float64) float64 {

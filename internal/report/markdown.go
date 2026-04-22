@@ -418,12 +418,16 @@ func actionBullets(run RunReport) []string {
 
 func riskLevelText(score int) string {
 	switch {
+	case score <= 15:
+		return "对应模型能力范围相匹配。"
 	case score >= 70:
 		return "风险较高。"
-	case score >= 40:
+	case score >= 41:
 		return "存在中等风险。"
-	default:
+	case score >= 16:
 		return "整体风险较低。"
+	default:
+		return "与对应模型能力范围相匹配。"
 	}
 }
 

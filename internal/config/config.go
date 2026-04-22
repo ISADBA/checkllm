@@ -55,6 +55,11 @@ func Parse(args []string) (Config, error) {
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {
 		return Config{}, errors.New("missing required flags: --base-url, --api-key, --model")
 	}
+	if cfg.BaselinePath == "" {
+		if err := baseline.EnsureDefaultTemplates(filepath.Join("docs", "baselines")); err != nil {
+			return Config{}, fmt.Errorf("initialize baselines: %w", err)
+		}
+	}
 
 	if cfg.BaselinePath != "" {
 		base, err := baseline.Load(cfg.BaselinePath)
