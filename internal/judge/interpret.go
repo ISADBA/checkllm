@@ -39,6 +39,8 @@ func Interpret(input Input) Interpretation {
 	wrapperScore, hasWrapperScore := input.Scores.Observations["wrapper_cleanliness_score"]
 	wrapperSuspected := hasWrapperScore && wrapperScore < 0.75
 	wrapperStrongSuspected := hasWrapperScore && wrapperScore < 0.5
+	translationCleanliness, hasTranslationCleanliness := input.Scores.Observations["anthropic_messages_translation_cleanliness"]
+	translationSuspected := hasTranslationCleanliness && translationCleanliness < 0.75
 	identityVendorMatch, hasIdentityVendorMatch := input.Scores.Observations["identity_self_report_vendor_match"]
 	identityFamilyMatch, hasIdentityFamilyMatch := input.Scores.Observations["identity_self_report_family_match"]
 	identityConsistency, hasIdentityConsistency := input.Scores.Observations["identity_self_report_consistency"]
@@ -48,6 +50,9 @@ func Interpret(input Input) Interpretation {
 	identityRewriteSuspected := hasMultiTurnConsistency && multiTurnConsistency < 0.55
 	if hasWrapperScore {
 		statuses["wrapper_cleanliness_score"] = deviationStatus(wrapperScore, 0.75, nil, len(input.History) > 1)
+	}
+	if hasTranslationCleanliness {
+		statuses["anthropic_messages_translation_cleanliness"] = deviationStatus(translationCleanliness, 0.75, nil, len(input.History) > 1)
 	}
 	if hasIdentityConsistency {
 		statuses["identity_self_report_consistency"] = deviationStatus(identityConsistency, 0.6, nil, len(input.History) > 1)
@@ -84,6 +89,9 @@ func Interpret(input Input) Interpretation {
 	if statuses["route_integrity_score"] != "normal" {
 		summaries = append(summaries, "Route integrity is unstable; stream or delivery behavior needs a retest.")
 	}
+	if translationSuspected {
+		summaries = append(summaries, "Anthropic Messages stream shows chat-completions-style translation traces, so the route is unlikely to be a clean native /v1/messages path.")
+	}
 	if wrapperStrongSuspected {
 		summaries = append(summaries, "Wrapper contamination probes strongly suggest extra platform instructions, branding, or output rewriting.")
 	} else if wrapperSuspected {
@@ -104,6 +112,8 @@ func Interpret(input Input) Interpretation {
 	conclusion := "high_confidence_official_compatible"
 	switch {
 	case len(input.Scores.HardAnomalies) > 0:
+		conclusion = "suspected_route_or_protocol_mismatch"
+	case translationSuspected:
 		conclusion = "suspected_route_or_protocol_mismatch"
 	case wrapperStrongSuspected:
 		conclusion = "suspected_wrapper_or_hidden_prompt"

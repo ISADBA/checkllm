@@ -52,7 +52,7 @@ func Calculate(input Input) Scores {
 	scores.BehaviorFingerprintScore = calculateFingerprintScore(input, grouped, &scores)
 	scores.CapabilityToolScore = calculateCapabilityScore(input, grouped, &scores)
 	scores.TierFidelityScore = calculateTierScore(grouped, &scores)
-	scores.RouteIntegrityScore = calculateRouteScore(grouped, scores.StreamConformityScore, scores.ProtocolConformityScore, &scores)
+	scores.RouteIntegrityScore = calculateRouteScore(input, grouped, scores.StreamConformityScore, scores.ProtocolConformityScore, &scores)
 
 	good := []int{
 		scores.ProtocolConformityScore,
@@ -425,14 +425,25 @@ func calculateCapabilityScore(input Input, grouped map[string][]probe.Result, sc
 	return weightedRatioScore(checks, weights)
 }
 
-func calculateRouteScore(grouped map[string][]probe.Result, streamScore, protocolScore int, scores *Scores) int {
+func calculateRouteScore(input Input, grouped map[string][]probe.Result, streamScore, protocolScore int, scores *Scores) int {
 	var latencyRatios []float64
+	var translationCleanliness []float64
 	for _, results := range grouped {
 		if len(results) < 2 {
+			for _, res := range results {
+				if cleanliness, ok := routeTranslationCleanliness(input.Provider, res); ok {
+					translationCleanliness = append(translationCleanliness, cleanliness)
+				}
+			}
 			continue
 		}
 		if ratio, ok := latencyStability(results); ok {
 			latencyRatios = append(latencyRatios, ratio)
+		}
+		for _, res := range results {
+			if cleanliness, ok := routeTranslationCleanliness(input.Provider, res); ok {
+				translationCleanliness = append(translationCleanliness, cleanliness)
+			}
 		}
 	}
 	routeChecks := []float64{
@@ -443,6 +454,11 @@ func calculateRouteScore(grouped map[string][]probe.Result, streamScore, protoco
 		avgRatio := average(latencyRatios)
 		scores.Observations["latency_instability_ratio"] = avgRatio
 		routeChecks = append(routeChecks, clampUnit(1.0-avgRatio))
+	}
+	if len(translationCleanliness) > 0 {
+		avgCleanliness := average(translationCleanliness)
+		scores.Observations["anthropic_messages_translation_cleanliness"] = avgCleanliness
+		routeChecks = append(routeChecks, avgCleanliness)
 	}
 	return ratioScore(routeChecks)
 }
@@ -839,6 +855,36 @@ func hasStreamDoneEvent(events []probe.StreamEvent) bool {
 	for _, evt := range events {
 		lower := strings.ToLower(evt.Type)
 		if strings.EqualFold(evt.Type, "done") || strings.Contains(lower, "completed") || strings.Contains(lower, "message_stop") || strings.Contains(lower, "stop_reason:") {
+			return true
+		}
+	}
+	return false
+}
+
+func routeTranslationCleanliness(provider string, res probe.Result) (float64, bool) {
+	if !strings.EqualFold(provider, "anthropic") || !res.Definition.Stream {
+		return 0, false
+	}
+	score := 1.0
+	rawLower := strings.ToLower(res.RawResponse)
+	if strings.Contains(rawLower, `"id":"chatcmpl-`) || strings.Contains(rawLower, `"id":"chatcmpl-msg_`) {
+		score *= 0.45
+	}
+	if !hasStreamEventType(res.StreamEvents, "message_delta") {
+		score *= 0.85
+	}
+	if !hasStreamEventType(res.StreamEvents, "message_stop") {
+		score *= 0.85
+	}
+	if !hasStreamEventType(res.StreamEvents, "content_block_stop") {
+		score *= 0.9
+	}
+	return clampUnit(score), true
+}
+
+func hasStreamEventType(events []probe.StreamEvent, want string) bool {
+	for _, evt := range events {
+		if strings.EqualFold(evt.Type, want) {
 			return true
 		}
 	}

@@ -15,13 +15,13 @@ updated_at: 2026-04-21
 protocol_conformity_score:
   min: 95
 stream_conformity_score:
-  min: 90
+  min: 95
 usage_consistency_score:
   min: 85
 behavior_fingerprint_score:
   min: 90
 capability_tool_score:
-  min: 50
+  min: 95
 tier_fidelity_score:
   min: 85
 route_integrity_score:
