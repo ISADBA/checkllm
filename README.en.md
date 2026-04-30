@@ -11,6 +11,11 @@ It currently targets two interface styles:
 
 The goal is not generic benchmarking. The goal is a reproducible authenticity and fidelity check: send a fixed set of probes to a target endpoint, inspect protocol consistency, usage payloads, behavioral fingerprints, tool-calling ability, streaming behavior, and historical runs, then produce a structured risk conclusion.
 
+The project currently provides two runtime modes:
+
+- `checkllm`: a one-shot CLI workflow for manual diagnosis, validating a single endpoint, and generating Markdown reports
+- `checkllm-exporter`: a scheduled exporter workflow for continuous probing, Prometheus scraping, and Grafana monitoring
+
 ## What It Is For
 
 This tool is useful when you need to:
@@ -22,18 +27,6 @@ This tool is useful when you need to:
 - generate a readable Markdown investigation report for users or internal teams
 
 It focuses on whether an interface behaves like the model family it claims to be, not on benchmark scores.
-
-Besides the one-shot CLI workflow, the project now also provides `checkllm-exporter`, which is meant for longer-running monitoring scenarios such as:
-
-- periodically probing a fixed set of model endpoints instead of running ad hoc manual checks
-- pushing results into `Prometheus + Grafana` for long-term trend observation
-- monitoring proxy routes, gateway routes, and official direct routes side by side
-- alerting on `risk score`, `tier score`, failure counts, or conclusion changes
-
-In short:
-
-- `checkllm` is for one-off diagnosis and Markdown reports
-- `checkllm-exporter` is for daemon-style continuous monitoring
 
 ## How It Works
 
@@ -198,90 +191,6 @@ If the Anthropic-style interface is exposed through an aggregation platform such
 - `--enable-stream`: whether to enable streaming probes, default `true`
 - `--expect-usage`: whether the endpoint is expected to return usage data, default `true`
 
-### 5.2 checkllm-exporter Use Cases
-
-If you do not want to inspect an endpoint just once, but want to keep watching it over time, `checkllm-exporter` is the better fit.
-
-Typical scenarios:
-
-- probe a proxy API every 2 hours and watch whether the risk score suddenly rises
-- compare official and proxy routes every 6 hours for the same model family
-- continuously expose `target_up`, `risk_score`, `tier_score`, and `conclusion` for multiple endpoints
-- let Prometheus scrape `/metrics`, then use Grafana for dashboards and alerting
-
-Its execution model is:
-
-- the exporter runs checks automatically based on each configured `schedule`
-- each completed run updates an in-memory latest snapshot
-- when Prometheus scrapes `/metrics`, it gets the latest completed result for each target
-- Prometheus itself does not trigger live checks
-
-### 5.3 Minimal checkllm-exporter Config Example
-
-Example config file:
-
-```yaml
-global:
-  listen_addr: ":9108"
-  global_max_concurrency: 2
-  default_timeout: 15m
-  default_retry:
-    max_attempts: 2
-    backoff: 30s
-
-groups:
-  - name: "prod-official"
-    schedule: "0 */6 * * *"
-    max_concurrency: 1
-    labels:
-      env: "prod"
-      vendor: "official"
-      region: "global"
-    targets:
-      - target_name: "openai-gpt-5-4"
-        enabled: true
-        provider: "openai"
-        base_url: "https://api.openai.com/v1"
-        api_key_ref: "env:OPENAI_API_KEY"
-        model: "gpt-5.4"
-        baseline_path: "./docs/baselines/openai-gpt-5.4.md"
-        labels:
-          route: "official"
-          owner: "platform"
-          tier: "flagship"
-```
-
-Start it with:
-
-```bash
-./dist/<goos>-<goarch>/checkllm-exporter --config ./checkllm_exporter.yaml
-```
-
-After startup it exposes:
-
-- `/metrics`
-- `/healthz`
-- `/readyz`
-
-Prometheus scrape example:
-
-```yaml
-scrape_configs:
-  - job_name: checkllm-exporter
-    static_configs:
-      - targets:
-          - 127.0.0.1:9108
-```
-
-Good first metrics to watch:
-
-- `checkllm_target_up`
-- `checkllm_target_last_risk_score`
-- `checkllm_target_last_tier_score`
-- `checkllm_runs_total`
-- `checkllm_run_failures_total`
-- `checkllm_target_conclusion`
-
 ### 5.1 Runtime and Token Cost
 
 With the current default probe set, `--max-samples=2`, and `--enable-stream=true`, one full run usually sends around `40-50` probe requests. Multi-step tool follow-ups can increase that number further.
@@ -334,6 +243,92 @@ The program reads existing Markdown reports from the current output directory an
 - same `model`
 
 It then uses those historical results together with the current scores during interpretation. For trend analysis, repeated runs for the same target should be stored in the same output area.
+
+## checkllm-exporter
+
+### 1. Use Cases
+
+If you do not want to inspect an endpoint just once, but want to keep watching it over time, `checkllm-exporter` is the better fit.
+
+Typical scenarios:
+
+- probe a proxy API every 2 hours and watch whether the risk score suddenly rises
+- compare official and proxy routes every 6 hours for the same model family
+- continuously expose `target_up`, `risk_score`, `tier_score`, and `conclusion` for multiple endpoints
+- let Prometheus scrape `/metrics`, then use Grafana for dashboards and alerting
+
+### 2. Execution Model
+
+`checkllm-exporter` works like this:
+
+- the exporter runs checks automatically based on each configured `schedule`
+- each completed run updates an in-memory latest snapshot
+- when Prometheus scrapes `/metrics`, it gets the latest completed result for each target
+- Prometheus itself does not trigger live checks
+
+### 3. Minimal Config Example
+
+```yaml
+global:
+  listen_addr: ":9108"
+  global_max_concurrency: 2
+  default_timeout: 15m
+  default_retry:
+    max_attempts: 2
+    backoff: 30s
+
+groups:
+  - name: "prod-official"
+    schedule: "0 */6 * * *"
+    max_concurrency: 1
+    labels:
+      env: "prod"
+      vendor: "official"
+      region: "global"
+    targets:
+      - target_name: "openai-gpt-5-4"
+        enabled: true
+        provider: "openai"
+        base_url: "https://api.openai.com/v1"
+        api_key_ref: "env:OPENAI_API_KEY"
+        model: "gpt-5.4"
+        baseline_path: "./docs/baselines/openai-gpt-5.4.md"
+        labels:
+          route: "official"
+          owner: "platform"
+          tier: "flagship"
+```
+
+### 4. Start Example
+
+```bash
+./dist/<goos>-<goarch>/checkllm-exporter --config ./checkllm_exporter.yaml
+```
+
+After startup it exposes:
+
+- `/metrics`
+- `/healthz`
+- `/readyz`
+
+### 5. Prometheus Scrape Example
+
+```yaml
+scrape_configs:
+  - job_name: checkllm-exporter
+    static_configs:
+      - targets:
+          - 127.0.0.1:9108
+```
+
+### 6. Recommended Metrics to Watch
+
+- `checkllm_target_up`
+- `checkllm_target_last_risk_score`
+- `checkllm_target_last_tier_score`
+- `checkllm_runs_total`
+- `checkllm_run_failures_total`
+- `checkllm_target_conclusion`
 
 ## Scope and Current Limitations
 

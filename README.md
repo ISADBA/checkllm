@@ -11,6 +11,11 @@
 
 项目的目标不是做通用压测平台，而是做一次可复现的“模型真实性 / 保真度”检查：对目标接口发起一组探针请求，分析协议一致性、 usage 回包、行为指纹、工具调用能力、流式输出和历史结果，再给出结构化风险结论。
 
+当前项目提供两种运行方式：
+
+- `checkllm`：一次性命令行检测，适合人工诊断、验证单个接口、生成 Markdown 报告
+- `checkllm-exporter`：周期运行的 exporter，适合持续巡检、Prometheus 抓取和 Grafana 监控
+
 ## 软件用途
 
 这个工具主要适合下面几类场景：
@@ -22,18 +27,6 @@
 - 给用户或内部团队产出一份可阅读的 Markdown 鉴定报告
 
 它关注的不是传统 benchmark 分数，而是“接口行为像不像它声称的那一类模型”。
-
-除了单次 CLI 检测之外，项目现在也提供 `checkllm-exporter`，适合下面这类长期监控场景：
-
-- 对一组固定模型入口做周期性巡检，而不是人工偶发执行
-- 把检测结果接入 `Prometheus + Grafana` 做长期趋势观察
-- 对代理层、网关层、官方直连链路做并行对比监控
-- 基于 `risk score`、`tier score`、失败次数、结论变化做告警
-
-简单说：
-
-- `checkllm` 适合人工发起的一次性诊断和出报告
-- `checkllm-exporter` 适合后台常驻运行和持续监控
 
 ## 业务设计
 
@@ -198,90 +191,6 @@ make build
 - `--enable-stream`：是否启用流式探针，默认 `true`
 - `--expect-usage`：是否要求接口返回 usage 字段，默认 `true`
 
-### 5.2 checkllm-exporter 使用场景
-
-如果你不是想“查一次”，而是想“长期盯着看”，就更适合使用 `checkllm-exporter`。
-
-典型场景：
-
-- 每 2 小时巡检一次代理 API，观察风险分是否突然上升
-- 每 6 小时同时检查官方接口和代理接口，比较两条链路的保真度
-- 对多个模型入口持续抓取 `target_up`、`risk_score`、`tier_score`、`conclusion`
-- 让 Prometheus 抓取 `/metrics`，由 Grafana 展示趋势并触发告警
-
-它的工作方式是：
-
-- exporter 按配置里的 `schedule` 自动执行检测
-- 每次检测结果保存在进程内存中
-- Prometheus 请求 `/metrics` 时，拿到的是每个 target 最近一次检测结果
-- Prometheus 本身不会触发实时检测
-
-### 5.3 checkllm-exporter 最小配置示例
-
-示例配置文件：
-
-```yaml
-global:
-  listen_addr: ":9108"
-  global_max_concurrency: 2
-  default_timeout: 15m
-  default_retry:
-    max_attempts: 2
-    backoff: 30s
-
-groups:
-  - name: "prod-official"
-    schedule: "0 */6 * * *"
-    max_concurrency: 1
-    labels:
-      env: "prod"
-      vendor: "official"
-      region: "global"
-    targets:
-      - target_name: "openai-gpt-5-4"
-        enabled: true
-        provider: "openai"
-        base_url: "https://api.openai.com/v1"
-        api_key_ref: "env:OPENAI_API_KEY"
-        model: "gpt-5.4"
-        baseline_path: "./docs/baselines/openai-gpt-5.4.md"
-        labels:
-          route: "official"
-          owner: "platform"
-          tier: "flagship"
-```
-
-启动方式：
-
-```bash
-./dist/<goos>-<goarch>/checkllm-exporter --config ./checkllm_exporter.yaml
-```
-
-启动后会暴露：
-
-- `/metrics`
-- `/healthz`
-- `/readyz`
-
-Prometheus 抓取示例：
-
-```yaml
-scrape_configs:
-  - job_name: checkllm-exporter
-    static_configs:
-      - targets:
-          - 127.0.0.1:9108
-```
-
-适合重点关注的指标包括：
-
-- `checkllm_target_up`
-- `checkllm_target_last_risk_score`
-- `checkllm_target_last_tier_score`
-- `checkllm_runs_total`
-- `checkllm_run_failures_total`
-- `checkllm_target_conclusion`
-
 ### 5.1 运行时间与 Token 开销
 
 按当前默认探针集、`--max-samples=2`、`--enable-stream=true` 的配置，一次完整运行通常会发出约 `40-50` 个探针请求；如果触发多步 tool follow-up，请求数还会继续增加。
@@ -334,6 +243,92 @@ scrape_configs:
 - 相同 `model`
 
 然后把本次分数与历史结果一起用于解释阶段判断。因此，同一个目标建议把多次结果落在同一类目录下，便于趋势分析。
+
+## checkllm-exporter
+
+### 1. 使用场景
+
+如果你不是想“查一次”，而是想“长期盯着看”，就更适合使用 `checkllm-exporter`。
+
+典型场景：
+
+- 每 2 小时巡检一次代理 API，观察风险分是否突然上升
+- 每 6 小时同时检查官方接口和代理接口，比较两条链路的保真度
+- 对多个模型入口持续抓取 `target_up`、`risk_score`、`tier_score`、`conclusion`
+- 让 Prometheus 抓取 `/metrics`，由 Grafana 展示趋势并触发告警
+
+### 2. 运行方式
+
+`checkllm-exporter` 的工作方式是：
+
+- exporter 按配置里的 `schedule` 自动执行检测
+- 每次检测结果保存在进程内存中
+- Prometheus 请求 `/metrics` 时，拿到的是每个 target 最近一次检测结果
+- Prometheus 本身不会触发实时检测
+
+### 3. 最小配置示例
+
+```yaml
+global:
+  listen_addr: ":9108"
+  global_max_concurrency: 2
+  default_timeout: 15m
+  default_retry:
+    max_attempts: 2
+    backoff: 30s
+
+groups:
+  - name: "prod-official"
+    schedule: "0 */6 * * *"
+    max_concurrency: 1
+    labels:
+      env: "prod"
+      vendor: "official"
+      region: "global"
+    targets:
+      - target_name: "openai-gpt-5-4"
+        enabled: true
+        provider: "openai"
+        base_url: "https://api.openai.com/v1"
+        api_key_ref: "env:OPENAI_API_KEY"
+        model: "gpt-5.4"
+        baseline_path: "./docs/baselines/openai-gpt-5.4.md"
+        labels:
+          route: "official"
+          owner: "platform"
+          tier: "flagship"
+```
+
+### 4. 启动示例
+
+```bash
+./dist/<goos>-<goarch>/checkllm-exporter --config ./checkllm_exporter.yaml
+```
+
+启动后会暴露：
+
+- `/metrics`
+- `/healthz`
+- `/readyz`
+
+### 5. Prometheus 抓取示例
+
+```yaml
+scrape_configs:
+  - job_name: checkllm-exporter
+    static_configs:
+      - targets:
+          - 127.0.0.1:9108
+```
+
+### 6. 建议重点关注的指标
+
+- `checkllm_target_up`
+- `checkllm_target_last_risk_score`
+- `checkllm_target_last_tier_score`
+- `checkllm_runs_total`
+- `checkllm_run_failures_total`
+- `checkllm_target_conclusion`
 
 ## 适用边界与当前限制
 
