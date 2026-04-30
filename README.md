@@ -1,5 +1,7 @@
 # checkllm
 
+[English](README.en.md) | 简体中文
+
 `checkllm` 是一个基于 Go 实现的命令行模型校验工具，用来判断某个 LLM 接口是否真正符合声明的模型身份、协议行为和能力特征，而不是只看它“能不能回答问题”,大白话就是检测模型是否灌水，使用低端模型包壳冒充高端模型。
 
 它当前面向两类接口：
@@ -20,6 +22,18 @@
 - 给用户或内部团队产出一份可阅读的 Markdown 鉴定报告
 
 它关注的不是传统 benchmark 分数，而是“接口行为像不像它声称的那一类模型”。
+
+除了单次 CLI 检测之外，项目现在也提供 `checkllm-exporter`，适合下面这类长期监控场景：
+
+- 对一组固定模型入口做周期性巡检，而不是人工偶发执行
+- 把检测结果接入 `Prometheus + Grafana` 做长期趋势观察
+- 对代理层、网关层、官方直连链路做并行对比监控
+- 基于 `risk score`、`tier score`、失败次数、结论变化做告警
+
+简单说：
+
+- `checkllm` 适合人工发起的一次性诊断和出报告
+- `checkllm-exporter` 适合后台常驻运行和持续监控
 
 ## 业务设计
 
@@ -143,6 +157,10 @@ make build
 
 默认会输出当前平台二进制到 `dist/<goos>-<goarch>/checkllm`。
 
+当前也会同时输出：
+
+- `dist/<goos>-<goarch>/checkllm-exporter`
+
 首次运行时，如果当前目录下缺少 `docs/baselines/` 或其中的默认 baseline 文件，程序会自动用二进制内置模板补齐缺失项，不会覆盖你已经存在的本地文件。
 
 ### 3. 运行 OpenAI 风格接口校验
@@ -179,6 +197,90 @@ make build
 - `--max-samples`：重复探针采样次数，默认 `2`
 - `--enable-stream`：是否启用流式探针，默认 `true`
 - `--expect-usage`：是否要求接口返回 usage 字段，默认 `true`
+
+### 5.2 checkllm-exporter 使用场景
+
+如果你不是想“查一次”，而是想“长期盯着看”，就更适合使用 `checkllm-exporter`。
+
+典型场景：
+
+- 每 2 小时巡检一次代理 API，观察风险分是否突然上升
+- 每 6 小时同时检查官方接口和代理接口，比较两条链路的保真度
+- 对多个模型入口持续抓取 `target_up`、`risk_score`、`tier_score`、`conclusion`
+- 让 Prometheus 抓取 `/metrics`，由 Grafana 展示趋势并触发告警
+
+它的工作方式是：
+
+- exporter 按配置里的 `schedule` 自动执行检测
+- 每次检测结果保存在进程内存中
+- Prometheus 请求 `/metrics` 时，拿到的是每个 target 最近一次检测结果
+- Prometheus 本身不会触发实时检测
+
+### 5.3 checkllm-exporter 最小配置示例
+
+示例配置文件：
+
+```yaml
+global:
+  listen_addr: ":9108"
+  global_max_concurrency: 2
+  default_timeout: 15m
+  default_retry:
+    max_attempts: 2
+    backoff: 30s
+
+groups:
+  - name: "prod-official"
+    schedule: "0 */6 * * *"
+    max_concurrency: 1
+    labels:
+      env: "prod"
+      vendor: "official"
+      region: "global"
+    targets:
+      - target_name: "openai-gpt-5-4"
+        enabled: true
+        provider: "openai"
+        base_url: "https://api.openai.com/v1"
+        api_key_ref: "env:OPENAI_API_KEY"
+        model: "gpt-5.4"
+        baseline_path: "./docs/baselines/openai-gpt-5.4.md"
+        labels:
+          route: "official"
+          owner: "platform"
+          tier: "flagship"
+```
+
+启动方式：
+
+```bash
+./dist/<goos>-<goarch>/checkllm-exporter --config ./checkllm_exporter.yaml
+```
+
+启动后会暴露：
+
+- `/metrics`
+- `/healthz`
+- `/readyz`
+
+Prometheus 抓取示例：
+
+```yaml
+scrape_configs:
+  - job_name: checkllm-exporter
+    static_configs:
+      - targets:
+          - 127.0.0.1:9108
+```
+
+适合重点关注的指标包括：
+
+- `checkllm_target_up`
+- `checkllm_target_last_risk_score`
+- `checkllm_target_last_tier_score`
+- `checkllm_runs_total`
+- `checkllm_run_failures_total`
+- `checkllm_target_conclusion`
 
 ### 5.1 运行时间与 Token 开销
 

@@ -1,8 +1,13 @@
 APP_NAME := checkllm
 MAIN_PKG := ./cmd/checkllm
+EXPORTER_NAME := checkllm-exporter
+EXPORTER_MAIN_PKG := ./cmd/checkllm-exporter
 OUT_DIR := dist
 GO ?= go
 GENERATE_TARGET := ./internal/baseline
+DOCKER ?= docker
+IMAGE_NAME ?= checkllm-engine
+IMAGE_TAG ?= latest
 
 SUPPORTED_PLATFORMS := \
 	darwin-amd64 \
@@ -23,7 +28,7 @@ platform_os = $(word 1,$(subst -, ,$1))
 platform_arch = $(word 2,$(subst -, ,$1))
 platform_ext = $(if $(filter windows,$(call platform_os,$1)),.exe,)
 
-.PHONY: build build-all clean help _build-platform all $(SUPPORTED_PLATFORMS)
+.PHONY: build build-all docker clean help _build-platform all $(SUPPORTED_PLATFORMS)
 
 build:
 ifeq ($(strip $(REQUESTED_TARGETS)),)
@@ -55,7 +60,14 @@ _build-platform:
 	@$(GO) generate $(GENERATE_TARGET)
 	@GOOS=$(call platform_os,$(PLATFORM)) GOARCH=$(call platform_arch,$(PLATFORM)) \
 		$(GO) build -o "$(OUT_DIR)/$(PLATFORM)/$(APP_NAME)$(call platform_ext,$(PLATFORM))" $(MAIN_PKG)
+	@GOOS=$(call platform_os,$(PLATFORM)) GOARCH=$(call platform_arch,$(PLATFORM)) \
+		$(GO) build -o "$(OUT_DIR)/$(PLATFORM)/$(EXPORTER_NAME)$(call platform_ext,$(PLATFORM))" $(EXPORTER_MAIN_PKG)
 	@echo "built $(OUT_DIR)/$(PLATFORM)/$(APP_NAME)$(call platform_ext,$(PLATFORM))"
+	@echo "built $(OUT_DIR)/$(PLATFORM)/$(EXPORTER_NAME)$(call platform_ext,$(PLATFORM))"
+
+docker:
+	@echo "building docker image $(IMAGE_NAME):$(IMAGE_TAG)"
+	@$(DOCKER) build -t "$(IMAGE_NAME):$(IMAGE_TAG)" .
 
 clean:
 	@rm -rf "$(OUT_DIR)"
@@ -64,6 +76,7 @@ help:
 	@echo "make build              Build the current platform binary"
 	@echo "make build all          Build all supported platform binaries"
 	@echo "make build <platform>   Build one platform binary"
+	@echo "make docker             Build docker image with checkllm and checkllm-exporter"
 	@echo "supported platforms: $(SUPPORTED_PLATFORMS)"
 
 all $(SUPPORTED_PLATFORMS):
