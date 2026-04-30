@@ -4,9 +4,15 @@
 
 `checkllm` 是一个基于 Go 实现的命令行模型校验工具，用来判断某个 LLM 接口是否真正符合声明的模型身份、协议行为和能力特征，而不是只看它“能不能回答问题”,大白话就是检测模型是否灌水，使用低端模型包壳冒充高端模型。
 
+## 相关仓库
+
+- 当前 `checkllm_engine/` 对应的 engine 仓库是：`https://github.com/ISADBA/checkllm`
+- 配套的 Web 前端仓库是：`https://github.com/ISADBA/checkllm_frontend`
+- 如果你需要提交检测任务、查看异步结果和浏览 Web 页面，请配合 `checkllm_frontend` 一起使用
+
 它当前面向两类接口：
 
-- OpenAI 风格的 `/responses` 接口
+- OpenAI 风格的 `/v1/responses` 接口
 - Anthropic 风格的 `/v1/messages` 接口
 
 项目的目标不是做通用压测平台，而是做一次可复现的“模型真实性 / 保真度”检查：对目标接口发起一组探针请求，分析协议一致性、 usage 回包、行为指纹、工具调用能力、流式输出和历史结果，再给出结构化风险结论。
