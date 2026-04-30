@@ -9,13 +9,25 @@ checkllm/
   cmd/
     checkllm/
       main.go
+    checkllm-exporter/
+      main.go
   docs/
     baselines/
     runs/
     repos/
   internal/
+    app/
+      runcheck/
     baseline/
     config/
+    exporter/
+      collector/
+      config/
+      runner/
+      scheduler/
+      secrets/
+      server/
+      state/
     history/
     judge/
     metric/
@@ -26,11 +38,14 @@ checkllm/
     report/
   go.mod
   Makefile
+  Dockerfile
 ```
 
 核心模块说明：
 
-- [cmd/checkllm/main.go](cmd/checkllm/main.go)：程序入口，串联执行流程
+- [cmd/checkllm/main.go](cmd/checkllm/main.go)：单次检测 CLI 入口
+- [cmd/checkllm-exporter/main.go](cmd/checkllm-exporter/main.go)：Exporter 常驻进程入口
+- [internal/app/runcheck/service.go](internal/app/runcheck/service.go)：公共单次检测执行层，供 CLI 和 exporter 复用
 - [internal/config/config.go](internal/config/config.go)：解析命令行参数并生成运行配置
 - [internal/baseline/loader.go](internal/baseline/loader.go)：加载基线 Markdown 中的 YAML 元数据和指标范围
 - [internal/probe/catalog.go](internal/probe/catalog.go)：定义默认探针集合
@@ -50,7 +65,11 @@ checkllm/
 make build
 ```
 
-默认编译当前平台二进制，输出到 `dist/<goos>-<goarch>/checkllm`。
+默认编译当前平台二进制，输出到：
+
+- `dist/<goos>-<goarch>/checkllm`
+- `dist/<goos>-<goarch>/checkllm-exporter`
+
 构建前会自动执行 baseline 嵌入代码生成，确保二进制内置的模板与 `docs/baselines/*.md` 保持一致。
 
 ```bash
@@ -77,6 +96,13 @@ env GOCACHE=/tmp/go-cache-checkllm-build go build ./...
 go build -o ./dist/local/checkllm ./cmd/checkllm
 ```
 
+如果要分别编译两个入口：
+
+```bash
+go build -o ./dist/local/checkllm ./cmd/checkllm
+go build -o ./dist/local/checkllm-exporter ./cmd/checkllm-exporter
+```
+
 如果你修改了 `docs/baselines/*.md`，建议先执行：
 
 ```bash
@@ -84,6 +110,71 @@ go generate ./internal/baseline
 ```
 
 这样会重新生成内置 baseline 模板代码。
+
+## Docker 打包
+
+### 使用 Makefile 打包镜像
+
+```bash
+make docker
+```
+
+默认会执行：
+
+```bash
+docker build -t checkllm-engine:latest .
+```
+
+也可以覆盖镜像名和 tag：
+
+```bash
+make docker IMAGE_NAME=my-checkllm IMAGE_TAG=v1
+```
+
+### 镜像内容
+
+当前镜像包含：
+
+- `/usr/local/bin/checkllm`
+- `/usr/local/bin/checkllm-exporter`
+- `/app/docs/baselines`
+
+容器默认启动命令是 `checkllm-exporter`，用于运行 exporter 常驻进程。
+
+### 默认启动行为
+
+镜像通过入口脚本启动：
+
+- 当默认启动时，会执行 `checkllm-exporter --config $CHECKLLM_EXPORTER_CONFIG`
+- 默认环境变量 `CHECKLLM_EXPORTER_CONFIG=/etc/checkllm/checkllm_exporter.yaml`
+
+因此，运行 exporter 时通常需要把配置文件挂载到容器内。
+
+### 运行 exporter 容器
+
+```bash
+docker run --rm \
+  -p 9108:9108 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v $(pwd)/checkllm_exporter.yaml:/etc/checkllm/checkllm_exporter.yaml:ro \
+  checkllm-engine:latest
+```
+
+如果配置里引用了本地文件型密钥，例如 `api_key_ref=file:/etc/secrets/openai.key`，还需要额外挂载该文件。
+
+### 在容器中手动执行单次检测
+
+如果你不想启动 exporter，而是临时运行一次 `checkllm`，可以覆盖默认命令：
+
+```bash
+docker run --rm \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  checkllm-engine:latest \
+  checkllm run \
+  --base-url https://api.openai.com/v1 \
+  --api-key $OPENAI_API_KEY \
+  --model gpt-5.4
+```
 
 ## GitHub Actions 发布
 
@@ -106,6 +197,14 @@ go generate ./internal/baseline
 如果你只想手动验证 workflow，也可以在 GitHub Actions 页面直接执行 `workflow_dispatch`。
 
 ## 源码运行
+
+### 启动 exporter
+
+```bash
+go run ./cmd/checkllm-exporter --config ./checkllm_exporter.yaml
+```
+
+exporter 会按配置中的 `schedule` 自动执行检测，并通过 `/metrics` 暴露每个 target 最近一次检测结果。
 
 ### 运行 OpenAI 风格接口校验
 

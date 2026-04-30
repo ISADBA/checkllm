@@ -51,6 +51,10 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg.Command = "run"
+	return Normalize(cfg)
+}
+
+func Normalize(cfg Config) (Config, error) {
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {
 		return Config{}, errors.New("missing required flags: --base-url, --api-key, --model")
@@ -112,6 +116,10 @@ func (c Config) UserReportPath() string {
 func sanitizeFileName(v string) string {
 	replacer := strings.NewReplacer("/", "-", " ", "-", ":", "-", "\\", "-")
 	return replacer.Replace(v)
+}
+
+func SanitizeFileName(v string) string {
+	return sanitizeFileName(v)
 }
 
 func resolveBaselineForModel(dir, model string) (string, string, error) {

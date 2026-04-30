@@ -1,0 +1,7 @@
+.git
+dist
+checkllm
+*.log
+docs/runs
+docs/repos
+data
