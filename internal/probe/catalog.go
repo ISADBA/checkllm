@@ -496,8 +496,46 @@ func DefaultCatalog(provider, model string, enableStream bool, maxSamples int) [
 	}
 	if strings.EqualFold(provider, "anthropic") {
 		probes = tuneAnthropicCatalog(probes)
+	} else if strings.EqualFold(provider, "openai") {
+		probes = tuneOpenAICatalog(probes)
 	}
 	_ = model
+	return probes
+}
+
+func tuneOpenAICatalog(probes []Definition) []Definition {
+	for i := range probes {
+		switch probes[i].Name {
+		case "fingerprint-wrapper-clean-json":
+			if probes[i].MaxOutputTokens < 96 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "fingerprint-no-branding":
+			if probes[i].MaxOutputTokens < 48 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "identity-self-report-esperanto", "identity-self-report-latin":
+			if probes[i].MaxOutputTokens < 192 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "identity-multiturn-esperanto", "identity-resistance-latin":
+			if probes[i].MaxOutputTokens < 384 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "tier-multi-constraint":
+			if probes[i].MaxOutputTokens < 192 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "tier-instruction-hard":
+			if probes[i].MaxOutputTokens < 160 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		case "thinking-basic":
+			if probes[i].MaxOutputTokens < 128 {
+				probes[i].MaxOutputTokens = 1024
+			}
+		}
+	}
 	return probes
 }
 
