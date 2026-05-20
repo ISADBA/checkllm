@@ -13,6 +13,7 @@ import (
 	"github.com/ISADBA/checkllm/internal/app/runcheck"
 	exportercollector "github.com/ISADBA/checkllm/internal/exporter/collector"
 	exporterconfig "github.com/ISADBA/checkllm/internal/exporter/config"
+	"github.com/ISADBA/checkllm/internal/exporter/logging"
 	"github.com/ISADBA/checkllm/internal/exporter/runner"
 	"github.com/ISADBA/checkllm/internal/exporter/scheduler"
 	"github.com/ISADBA/checkllm/internal/exporter/secrets"
@@ -33,18 +34,21 @@ func main() {
 	var configPath string
 	var logLevel string
 	flag.StringVar(&configPath, "config", "", "exporter config file")
-	flag.StringVar(&logLevel, "log-level", "info", "log level")
+	flag.StringVar(&logLevel, "log-level", "", "log level override")
 	flag.Parse()
 
 	if configPath == "" {
 		log.Fatal("missing required --config")
 	}
-	_ = logLevel
 
 	cfg, err := exporterconfig.Load(configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	if logLevel != "" {
+		cfg.Global.LogLevel = logLevel
+	}
+	logger := logging.New(cfg.Global.LogLevel)
 
 	store := state.NewStore()
 	targetCount := 0
@@ -69,10 +73,10 @@ func main() {
 
 	runSvc := runcheck.NewService()
 	resolver := secrets.NewResolver()
-	run := runner.New(runSvc, resolver, store, cfg)
-	sched := scheduler.New(cfg, store, run)
+	run := runner.New(runSvc, resolver, store, cfg, logger)
+	sched := scheduler.New(cfg, store, run, logger)
 	metrics := exportercollector.New(store, exporterStats{run: run, sched: sched}, len(cfg.Groups), targetCount)
-	httpServer := server.New(cfg.Global.ListenAddr, metrics)
+	httpServer := server.New(cfg.Global.ListenAddr, metrics, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -85,12 +89,13 @@ func main() {
 		}
 	}()
 
-	log.Printf("checkllm exporter listening on %s", cfg.Global.ListenAddr)
+	logger.Infof("checkllm exporter listening on %s", cfg.Global.ListenAddr)
+	logger.Infof("exporter config loaded: groups=%d targets=%d log_level=%s global_max_concurrency=%d", len(cfg.Groups), targetCount, cfg.Global.LogLevel, cfg.Global.GlobalMaxConcurrency)
 	<-ctx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown http server: %v", err)
+		logger.Warnf("shutdown http server: %v", err)
 	}
 }

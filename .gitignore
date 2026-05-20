@@ -4,3 +4,4 @@ repos/
 LOCAL_README.md
 checkllm
 dist/
+conf/checkllm_exporter.yaml

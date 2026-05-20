@@ -18,6 +18,7 @@ type Config struct {
 
 type GlobalConfig struct {
 	ListenAddr           string
+	LogLevel             string
 	ScrapeTimeout        time.Duration
 	GlobalMaxConcurrency int
 	DefaultTimeout       time.Duration

@@ -277,6 +277,7 @@ make build
 ```yaml
 global:
   listen_addr: ":9108"
+  log_level: "info"
   global_max_concurrency: 2
   default_timeout: 15m
   default_retry:
@@ -316,6 +317,27 @@ groups:
 - `/metrics`
 - `/healthz`
 - `/readyz`
+- `/debug/targets`
+
+`log_level` 支持 `debug`、`info`、`warn`、`error`。排查执行过程建议使用 `debug`，日常运行建议使用 `info`。
+
+`/metrics` 适合 Prometheus 抓取和告警，但失败指标只会暴露分类，例如 `network`、`timeout`、`auth`，不会包含完整错误文本。
+如果你需要查看某个 target 最近一次失败的具体原因，请查询 `/debug/targets`：
+
+```bash
+curl -s http://127.0.0.1:9108/debug/targets
+```
+
+返回 JSON 中会包含：
+
+- `last_error_type`
+- `last_error_message`
+
+排查单个 target 时，可以配合 `jq` 过滤：
+
+```bash
+curl -s http://127.0.0.1:9108/debug/targets | jq '.targets[] | select(.target=="openai-gpt-5-4")'
+```
 
 ### 5. Prometheus 抓取示例
 
@@ -335,6 +357,8 @@ scrape_configs:
 - `checkllm_runs_total`
 - `checkllm_run_failures_total`
 - `checkllm_target_conclusion`
+
+当 `checkllm_run_failures_total` 增长时，建议同步查看 `/debug/targets` 中对应 target 的 `last_error_message`。
 
 ## 适用边界与当前限制
 

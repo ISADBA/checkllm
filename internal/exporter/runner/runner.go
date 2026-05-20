@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ISADBA/checkllm/internal/app/runcheck"
 	exporterconfig "github.com/ISADBA/checkllm/internal/exporter/config"
+	"github.com/ISADBA/checkllm/internal/exporter/logging"
 	"github.com/ISADBA/checkllm/internal/exporter/secrets"
 	"github.com/ISADBA/checkllm/internal/exporter/state"
 )
@@ -26,11 +28,12 @@ type Runner struct {
 	store       *state.Store
 	globalSem   chan struct{}
 	groupSem    map[string]chan struct{}
+	log         logging.Logger
 	runningJobs atomic.Int64
 	queueDepth  atomic.Int64
 }
 
-func New(service runcheck.Service, resolver secrets.Resolver, store *state.Store, cfg exporterconfig.Config) *Runner {
+func New(service runcheck.Service, resolver secrets.Resolver, store *state.Store, cfg exporterconfig.Config, logger logging.Logger) *Runner {
 	groupSem := make(map[string]chan struct{}, len(cfg.Groups))
 	for _, group := range cfg.Groups {
 		groupSem[group.Name] = make(chan struct{}, group.MaxConcurrency)
@@ -41,6 +44,7 @@ func New(service runcheck.Service, resolver secrets.Resolver, store *state.Store
 		store:     store,
 		globalSem: make(chan struct{}, cfg.Global.GlobalMaxConcurrency),
 		groupSem:  groupSem,
+		log:       logger,
 	}
 }
 
@@ -49,25 +53,32 @@ func (r *Runner) Submit(ctx context.Context, job Job) {
 	startedAt := time.Now()
 	if !r.store.MarkRunning(key, startedAt) {
 		r.store.RecordSkip(key, "already_running")
+		r.log.Warnf("target skipped: group=%s target=%s reason=already_running", job.Group.Name, job.Target.TargetName)
 		return
 	}
-	r.queueDepth.Add(1)
+	depth := r.queueDepth.Add(1)
+	r.log.Infof("target queued: group=%s target=%s model=%s base_url=%s queue_depth=%d", job.Group.Name, job.Target.TargetName, job.Target.Model, job.Target.BaseURL, depth)
 	go r.run(ctx, key, job, startedAt)
 }
 
 func (r *Runner) run(ctx context.Context, key state.TargetKey, job Job, startedAt time.Time) {
-	r.runningJobs.Add(1)
-	defer r.runningJobs.Add(-1)
-	defer r.queueDepth.Add(-1)
+	running := r.runningJobs.Add(1)
+	r.log.Infof("target started: group=%s target=%s running_jobs=%d", job.Group.Name, job.Target.TargetName, running)
+	defer func() {
+		r.runningJobs.Add(-1)
+		r.queueDepth.Add(-1)
+	}()
 
 	summary, retries, failureType, err := r.execute(ctx, job)
 	duration := time.Since(startedAt)
 	if err != nil {
 		r.store.FinishFailure(key, state.FailureUpdate{
-			Duration:  duration,
-			ErrorType: failureType,
-			Retries:   retries,
+			Duration:     duration,
+			ErrorType:    failureType,
+			ErrorMessage: err.Error(),
+			Retries:      retries,
 		})
+		r.log.Errorf("target failed: group=%s target=%s duration=%s retries=%d error_type=%s err=%v", job.Group.Name, job.Target.TargetName, duration.Round(time.Millisecond), retries, failureType, err)
 		return
 	}
 
@@ -76,6 +87,7 @@ func (r *Runner) run(ctx context.Context, key state.TargetKey, job Job, startedA
 		Summary:  summary,
 		Retries:  retries,
 	})
+	r.log.Infof("target succeeded: group=%s target=%s duration=%s retries=%d conclusion=%s risk=%.0f protocol=%.0f usage=%.0f tier=%.0f route=%.0f", job.Group.Name, job.Target.TargetName, duration.Round(time.Millisecond), retries, summary.Conclusion, summary.Scores.Risk, summary.Scores.Protocol, summary.Scores.Usage, summary.Scores.Tier, summary.Scores.Route)
 }
 
 func (r *Runner) execute(ctx context.Context, job Job) (runcheck.Summary, uint64, string, error) {
@@ -98,9 +110,11 @@ func (r *Runner) execute(ctx context.Context, job Job) (runcheck.Summary, uint64
 	if attempts < 1 {
 		attempts = 1
 	}
+	r.log.Debugf("target execution config: group=%s target=%s timeout=%s attempts=%d backoff=%s", job.Group.Name, job.Target.TargetName, job.Group.Timeout, attempts, job.Group.Retry.Backoff)
 	var retries uint64
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
+		r.log.Infof("target attempt: group=%s target=%s attempt=%d/%d", job.Group.Name, job.Target.TargetName, attempt, attempts)
 		runCtx, cancel := context.WithTimeout(ctx, job.Group.Timeout)
 		result, runErr := r.service.Run(runCtx, runcheck.Input{
 			BaseURL:      job.Target.BaseURL,
@@ -119,16 +133,19 @@ func (r *Runner) execute(ctx context.Context, job Job) (runcheck.Summary, uint64
 		if runErr == nil {
 			if err := validateSummary(result.Summary); err != nil {
 				lastErr = err
+				r.log.Errorf("target summary invalid: group=%s target=%s attempt=%d err=%v", job.Group.Name, job.Target.TargetName, attempt, err)
 				break
 			}
 			return result.Summary, retries, "", nil
 		}
 		lastErr = runErr
+		r.log.Warnf("target attempt failed: group=%s target=%s attempt=%d/%d error_type=%s err=%v", job.Group.Name, job.Target.TargetName, attempt, attempts, classifyError(runErr), runErr)
 		if attempt >= attempts || !isRetryable(runErr) {
 			break
 		}
 		retries++
 		if job.Group.Retry.Backoff > 0 {
+			r.log.Infof("target retry scheduled: group=%s target=%s next_attempt=%d backoff=%s reason=%s", job.Group.Name, job.Target.TargetName, attempt+1, job.Group.Retry.Backoff, classifyError(runErr))
 			timer := time.NewTimer(job.Group.Retry.Backoff)
 			select {
 			case <-ctx.Done():
@@ -138,7 +155,7 @@ func (r *Runner) execute(ctx context.Context, job Job) (runcheck.Summary, uint64
 			}
 		}
 	}
-	return runcheck.Summary{}, retries, classifyError(lastErr), lastErr
+	return runcheck.Summary{}, retries, classifyError(lastErr), fmt.Errorf("run check failed after %d attempt(s): %w", attempts, lastErr)
 }
 
 func validateSummary(summary runcheck.Summary) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ISADBA/checkllm/internal/app/runcheck"
 	exporterconfig "github.com/ISADBA/checkllm/internal/exporter/config"
+	"github.com/ISADBA/checkllm/internal/exporter/logging"
 	"github.com/ISADBA/checkllm/internal/exporter/state"
 )
 
@@ -69,7 +70,7 @@ func TestRunnerRetriesRetryableErrors(t *testing.T) {
 			Retry:          exporterconfig.RetryConfig{MaxAttempts: 2},
 		}},
 	}
-	r := New(service, fakeResolver{}, store, cfg)
+	r := New(service, fakeResolver{}, store, cfg, logging.New("error"))
 	r.Submit(context.Background(), Job{
 		Group: cfg.Groups[0],
 		Target: exporterconfig.TargetConfig{

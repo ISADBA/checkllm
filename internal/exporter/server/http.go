@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ISADBA/checkllm/internal/exporter/collector"
+	"github.com/ISADBA/checkllm/internal/exporter/state"
 )
 
 type Server struct {
@@ -14,10 +15,11 @@ type Server struct {
 	ready      atomic.Bool
 }
 
-func New(listenAddr string, metrics *collector.Collector) *Server {
+func New(listenAddr string, metrics *collector.Collector, store *state.Store) *Server {
 	s := &Server{}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics)
+	mux.HandleFunc("/debug/targets", debugTargetsHandler(store))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

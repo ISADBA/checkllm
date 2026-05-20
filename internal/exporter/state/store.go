@@ -32,6 +32,7 @@ type TargetState struct {
 	LastDuration             time.Duration
 	LastUp                   bool
 	LastErrorType            string
+	LastErrorMessage         string
 	LastConclusion           string
 	LastRiskScore            float64
 	LastProtocolScore        float64
@@ -66,9 +67,10 @@ type SuccessUpdate struct {
 }
 
 type FailureUpdate struct {
-	Duration  time.Duration
-	ErrorType string
-	Retries   uint64
+	Duration     time.Duration
+	ErrorType    string
+	ErrorMessage string
+	Retries      uint64
 }
 
 type Store struct {
@@ -127,6 +129,7 @@ func (s *Store) FinishSuccess(key TargetKey, update SuccessUpdate) {
 	entry.LastDuration = update.Duration
 	entry.LastUp = true
 	entry.LastErrorType = ""
+	entry.LastErrorMessage = ""
 	entry.LastConclusion = update.Summary.Conclusion
 	entry.LastRiskScore = update.Summary.Scores.Risk
 	entry.LastProtocolScore = update.Summary.Scores.Protocol
@@ -159,6 +162,7 @@ func (s *Store) FinishFailure(key TargetKey, update FailureUpdate) {
 	entry.LastDuration = update.Duration
 	entry.LastUp = false
 	entry.LastErrorType = update.ErrorType
+	entry.LastErrorMessage = update.ErrorMessage
 	entry.RunsTotal["failed"]++
 	entry.FailuresTotal[update.ErrorType]++
 	entry.RetriesTotal += update.Retries

@@ -25,6 +25,15 @@ func Normalize(cfg Config, baseDir string) (Config, error) {
 	if cfg.Global.ListenAddr == "" {
 		cfg.Global.ListenAddr = ":9108"
 	}
+	cfg.Global.LogLevel = strings.ToLower(strings.TrimSpace(cfg.Global.LogLevel))
+	if cfg.Global.LogLevel == "" {
+		cfg.Global.LogLevel = "info"
+	}
+	switch cfg.Global.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return Config{}, fmt.Errorf("global.log_level %q is not supported", cfg.Global.LogLevel)
+	}
 	if cfg.Global.ScrapeTimeout <= 0 {
 		cfg.Global.ScrapeTimeout = 10 * time.Second
 	}
@@ -188,6 +197,8 @@ func parseGlobal(lines []parsedLine, idx *int, global *GlobalConfig) error {
 		switch {
 		case strings.HasPrefix(line.text, "listen_addr:"):
 			global.ListenAddr = parseString(valuePart(line.text))
+		case strings.HasPrefix(line.text, "log_level:"):
+			global.LogLevel = parseString(valuePart(line.text))
 		case strings.HasPrefix(line.text, "scrape_timeout:"):
 			d, err := time.ParseDuration(parseString(valuePart(line.text)))
 			if err != nil {

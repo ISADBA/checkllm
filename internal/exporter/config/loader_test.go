@@ -13,6 +13,7 @@ func TestLoadParsesAndNormalizesConfig(t *testing.T) {
 	content := `
 global:
   listen_addr: ":9108"
+  log_level: "debug"
   scrape_timeout: 10s
   global_max_concurrency: 4
   default_timeout: 15m
@@ -50,6 +51,9 @@ groups:
 	}
 	if cfg.Global.GlobalMaxConcurrency != 4 {
 		t.Fatalf("unexpected concurrency: %d", cfg.Global.GlobalMaxConcurrency)
+	}
+	if cfg.Global.LogLevel != "debug" {
+		t.Fatalf("unexpected log level: %s", cfg.Global.LogLevel)
 	}
 	group := cfg.Groups[0]
 	if group.Retry.MaxAttempts != 2 || group.Retry.Backoff != 30*time.Second {
@@ -90,5 +94,36 @@ func TestNormalizeRejectsInvalidLabels(t *testing.T) {
 	}, t.TempDir())
 	if err == nil {
 		t.Fatal("expected invalid label error")
+	}
+}
+
+func TestNormalizeRejectsInvalidLogLevel(t *testing.T) {
+	_, err := Normalize(Config{
+		Global: GlobalConfig{
+			ListenAddr:           ":9108",
+			LogLevel:             "verbose",
+			GlobalMaxConcurrency: 1,
+			DefaultTimeout:       time.Minute,
+			DefaultRetry:         RetryConfig{MaxAttempts: 1},
+		},
+		Groups: []GroupConfig{{
+			Name:           "prod",
+			Schedule:       "0 * * * *",
+			Timeout:        time.Minute,
+			MaxConcurrency: 1,
+			Retry:          RetryConfig{MaxAttempts: 1},
+			Targets: []TargetConfig{{
+				TargetName:   "a",
+				Enabled:      true,
+				Provider:     "openai",
+				BaseURL:      "https://api.openai.com/v1",
+				APIKey:       "x",
+				Model:        "gpt-5.4",
+				BaselinePath: "/tmp/base.md",
+			}},
+		}},
+	}, t.TempDir())
+	if err == nil {
+		t.Fatal("expected invalid log level error")
 	}
 }

@@ -271,6 +271,7 @@ Typical scenarios:
 ```yaml
 global:
   listen_addr: ":9108"
+  log_level: "info"
   global_max_concurrency: 2
   default_timeout: 15m
   default_retry:
@@ -310,6 +311,27 @@ After startup it exposes:
 - `/metrics`
 - `/healthz`
 - `/readyz`
+- `/debug/targets`
+
+`log_level` supports `debug`, `info`, `warn`, and `error`. Use `debug` for detailed execution traces and `info` for normal operation.
+
+`/metrics` is meant for Prometheus scraping and alerting, but failure metrics only expose a category such as `network`, `timeout`, or `auth`; they do not include the full error text.
+If you need the concrete reason for the latest failed run of a target, query `/debug/targets`:
+
+```bash
+curl -s http://127.0.0.1:9108/debug/targets
+```
+
+The JSON response includes:
+
+- `last_error_type`
+- `last_error_message`
+
+To inspect a single target with `jq`:
+
+```bash
+curl -s http://127.0.0.1:9108/debug/targets | jq '.targets[] | select(.target=="openai-gpt-5-4")'
+```
 
 ### 5. Prometheus Scrape Example
 
@@ -329,6 +351,8 @@ scrape_configs:
 - `checkllm_runs_total`
 - `checkllm_run_failures_total`
 - `checkllm_target_conclusion`
+
+When `checkllm_run_failures_total` increases, also inspect the target's `last_error_message` from `/debug/targets`.
 
 ## Scope and Current Limitations
 
